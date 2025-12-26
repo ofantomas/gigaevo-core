@@ -19,6 +19,8 @@ import pickle
 from pathlib import Path
 from litellm import completion
 import time
+import re
+import ast
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,79 @@ class AgenticMemorySystem:
                                     "new_tags_neighborhood": [["tag_1",...,"tag_n"],...["tag_1",...,"tag_n"]],
                                 }}
                                 '''
+
+        # Regex to extract JSON content from markdown fenced code blocks.
+        self._json_fence_re = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+
+    def _parse_llm_json(self, response: Any) -> Any:
+        """Parse JSON returned by an LLM, tolerating common wrappers.
+
+        Some backends/models ignore `response_format` and return:
+        - Markdown fenced blocks: ```json { ... } ```
+        - Extra commentary before/after JSON
+        - Python-ish dict literals (single quotes)
+
+        This function extracts the most likely JSON payload and parses it.
+        """
+        if response is None:
+            raise ValueError("LLM response is None")
+
+        # If already structured, return as-is.
+        if isinstance(response, (dict, list)):
+            return response
+
+        # Try to unwrap common completion objects (OpenAI/LiteLLM-like).
+        if not isinstance(response, str):
+            try:
+                if hasattr(response, "choices") and response.choices:
+                    msg = response.choices[0].message
+                    if hasattr(msg, "content"):
+                        response = msg.content
+                    else:
+                        response = str(response)
+                else:
+                    response = str(response)
+            except Exception:
+                response = str(response)
+
+        text = (response or "").strip()
+        if not text:
+            raise ValueError("LLM response is empty")
+
+        # 1) If markdown fenced, prefer the first fenced payload.
+        m = self._json_fence_re.search(text)
+        if m:
+            text = m.group(1).strip()
+
+        # 2) If there is leading/trailing non-JSON text, slice to the outermost JSON object/array.
+        def _slice_outer_json(s: str) -> str:
+            s = s.strip()
+            if not s:
+                return s
+            # Prefer object if present, otherwise array.
+            obj_start = s.find("{")
+            arr_start = s.find("[")
+            if obj_start == -1 and arr_start == -1:
+                return s
+            if obj_start != -1 and (arr_start == -1 or obj_start < arr_start):
+                end = s.rfind("}")
+                return s[obj_start:end + 1] if end != -1 else s[obj_start:]
+            end = s.rfind("]")
+            return s[arr_start:end + 1] if end != -1 else s[arr_start:]
+
+        candidate = _slice_outer_json(text)
+
+        # 3) Parse: JSON first; then a safe Python-literal fallback.
+        try:
+            return json.loads(candidate)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(candidate)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except Exception as e:
+                # Re-raise original-ish error for better debugging.
+                raise ValueError(f"Could not parse LLM response as JSON. Raw head={text[:200]!r}") from e
         
     def analyze_content(self, content: str) -> Dict:            
         """Analyze content using LLM to extract semantic metadata.
@@ -230,7 +305,13 @@ class AgenticMemorySystem:
                         }
                     }})
             print("[LLM DEBUG][analyze_content] Response received:\n" + str(response))
-            return json.loads(response)
+            parsed = self._parse_llm_json(response)
+            # Ensure expected keys exist.
+            return {
+                "keywords": parsed.get("keywords", []) if isinstance(parsed, dict) else [],
+                "context": parsed.get("context", "General") if isinstance(parsed, dict) else "General",
+                "tags": parsed.get("tags", []) if isinstance(parsed, dict) else [],
+            }
         except Exception as e:
             print(f"Error analyzing content: {e}")
             return {"keywords": [], "context": "General", "tags": []}
@@ -677,7 +758,7 @@ class AgenticMemorySystem:
                 )
                 print(f"[LLM DEBUG][process_memory] Response for note {note.id}:\n{response}")
                 
-                response_json = json.loads(response)
+                response_json = self._parse_llm_json(response)
                 should_evolve = response_json["should_evolve"]
                 
                 if should_evolve:

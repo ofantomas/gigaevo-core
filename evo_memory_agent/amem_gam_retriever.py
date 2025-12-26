@@ -98,7 +98,7 @@ def build_retrievers(page_store: InMemoryPageStore, index_dir: Path):
         retrievers["page_index"] = index_retriever
         print("✅ Index retriever ready")
     except Exception as e:
-        print(f"[WARN] Index retriever failed: {e}")
+        print(f"[WARN] Index retriever init from {IndexRetriever} failed: {e}")
 
     try:
         dense_config = DenseRetrieverConfig(
@@ -111,7 +111,7 @@ def build_retrievers(page_store: InMemoryPageStore, index_dir: Path):
         retrievers["vector"] = dense_retriever
         print("✅ Dense retriever ready")
     except Exception as e:
-        print(f"[WARN] Dense retriever failed: {e}")
+        print(f"[WARN] Dense retriever init from {DenseRetriever} failed: {e}")
 
     return retrievers
 
