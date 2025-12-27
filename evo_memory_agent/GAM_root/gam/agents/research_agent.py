@@ -31,7 +31,7 @@ from GAM_root.gam.generator import AbsGenerator
 class ResearchAgent:
     """
     Public API:
-      - research(request) -> ResearchOutput
+      - research(request, memory_state=None) -> ResearchOutput
     Internal steps:
       - _planning(request, memory_state) -> SearchPlan
       - _search(plan) -> SearchResults  (calls keyword/vector/page_id + tools)
@@ -85,7 +85,7 @@ class ResearchAgent:
                 pass
 
     # ---- Public ----
-    def research(self, request: str) -> ResearchOutput:
+    def research(self, request: str, memory_state: Optional[str] = None) -> ResearchOutput:
         # 在开始研究前，确保检索器索引是最新的
         self._update_retrievers()
         
@@ -95,8 +95,12 @@ class ResearchAgent:
 
         for step in range(self.max_iters):
             # Load current memory state dynamically
-            memory_state = self.memory_store.load()
-            plan = self._planning(next_request, memory_state)
+            current_memory_state = self.memory_store.load()
+            plan = self._planning(
+                next_request,
+                current_memory_state,
+                memory_state_override=memory_state,
+            )
             print("[GAM] Plan:")
             print(json.dumps(plan.__dict__, ensure_ascii=True, indent=2))
 
@@ -150,10 +154,11 @@ class ResearchAgent:
 
     # ---- Internal ----
     def _planning(
-        self, 
-        request: str, 
+        self,
+        request: str,
         memory_state: MemoryState,
-        planning_prompt: Optional[str] = None
+        planning_prompt: Optional[str] = None,
+        memory_state_override: Optional[str] = None,
     ) -> SearchPlan:
         """
         Produce a SearchPlan:
@@ -162,7 +167,9 @@ class ResearchAgent:
           - keyword/vector/page_id payloads
         """
 
-        if not memory_state.abstracts:
+        if memory_state_override is not None:
+            memory_context = memory_state_override
+        elif not memory_state.abstracts:
             memory_context = "No memory currently."
         else:
             memory_context_lines = []

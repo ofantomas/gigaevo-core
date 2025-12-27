@@ -104,9 +104,9 @@ class AmemGamMemory(GigaEvoMemoryBase):
         
         return new_memory_ids[0]
 
-    def search(self, query: str) -> str:
+    def search(self, query: str, memory_state: str | None = None) -> str:
         # ResearchAgent's public API is `research(request) -> ResearchOutput`.
-        return self.research_agent.research(query).integrated_memory
+        return self.research_agent.research(query, memory_state=memory_state).integrated_memory
     
     def __del__(self):
         if self._iters_after_rebuild > 0:
