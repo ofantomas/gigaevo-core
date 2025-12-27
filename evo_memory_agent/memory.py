@@ -47,6 +47,9 @@ class AmemGamMemory(GigaEvoMemoryBase):
             model_name=config.AMEM_EMBEDDING_MODEL_NAME,  # Embedding model for ChromaDB
             llm_backend="custom",           # Use external LLMService
             llm_service=self.llm_service,
+            chroma_persist_dir=self.checkpoint_dir / "chroma",
+            chroma_collection_name="memories",
+            use_gam_card_document=True,
         )
         memory_ids = set()
         
@@ -78,7 +81,11 @@ class AmemGamMemory(GigaEvoMemoryBase):
         self.gam_store_dir.mkdir(parents=True, exist_ok=True)
         memory_store, page_store, added = build_gam_store(records, self.gam_store_dir)
         print(f"[Memory] Loaded {len(records)} A-mem records, added {added} new pages.")
-        retrievers = build_retrievers(page_store, self.gam_store_dir / "indexes")
+        retrievers = build_retrievers(
+            page_store,
+            self.gam_store_dir / "indexes",
+            self.checkpoint_dir / "chroma",
+        )
         research_agent = ResearchAgent(
             page_store=page_store,
             memory_store=memory_store,

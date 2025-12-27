@@ -18,8 +18,7 @@ from GAM_root.gam import (
     InMemoryPageStore,
     IndexRetriever,
     IndexRetrieverConfig,
-    DenseRetriever,
-    DenseRetrieverConfig,
+    ChromaRetriever,
 )
 from GAM_root.gam.generator import AMemGenerator
 from GAM_root.gam.schemas import Page
@@ -88,7 +87,12 @@ def build_gam_store(records: List[Dict[str, Any]], store_dir: Path):
     return memory_store, page_store, added
 
 
-def build_retrievers(page_store: InMemoryPageStore, index_dir: Path):
+def build_retrievers(
+    page_store: InMemoryPageStore,
+    index_dir: Path,
+    chroma_dir: Path,
+    chroma_collection: str = "memories",
+):
     retrievers = {}
 
     try:
@@ -101,17 +105,16 @@ def build_retrievers(page_store: InMemoryPageStore, index_dir: Path):
         print(f"[WARN] Index retriever init from {IndexRetriever} failed: {e}")
 
     try:
-        dense_config = DenseRetrieverConfig(
-            index_dir=str(index_dir / "dense_index"),
-            model_name=config.GAM_DENSE_RETRIEVER_MODEL_NAME,
-            devices=["cpu"],
-        )
-        dense_retriever = DenseRetriever(dense_config.__dict__)
-        dense_retriever.build(page_store)
-        retrievers["vector"] = dense_retriever
-        print("✅ Dense retriever ready")
+        chroma_config = {
+            "persist_dir": str(chroma_dir),
+            "collection_name": chroma_collection,
+            "model_name": config.AMEM_EMBEDDING_MODEL_NAME,
+        }
+        chroma_retriever = ChromaRetriever(chroma_config)
+        retrievers["vector"] = chroma_retriever
+        print("✅ Chroma retriever ready")
     except Exception as e:
-        print(f"[WARN] Dense retriever init from {DenseRetriever} failed: {e}")
+        print(f"[WARN] Chroma retriever init from {ChromaRetriever} failed: {e}")
 
     return retrievers
 
@@ -144,7 +147,8 @@ def main():
     )
     generator = AMemGenerator({"llm_service": llm_service})
 
-    retrievers = build_retrievers(page_store, store_dir / "indexes")
+    chroma_dir = _repo_root() / "chroma"
+    retrievers = build_retrievers(page_store, store_dir / "indexes", chroma_dir)
     research_agent = ResearchAgent(
         page_store=page_store,
         memory_store=memory_store,

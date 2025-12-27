@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from .llm_controller import LLMController
 from A_mem.agent.agent_class import LLMService
-from .retrievers import ChromaRetriever
+from .retrievers import ChromaRetriever, PersistentChromaRetriever
 import json
 import logging
 from rank_bm25 import BM25Okapi
@@ -99,7 +99,10 @@ class AgenticMemorySystem:
                  llm_model: str = "gpt-4o-mini",
                  evo_threshold: int = 100,
                  api_key: Optional[str] = None,
-                 llm_service: Optional[LLMService] = None):  
+                 llm_service: Optional[LLMService] = None,
+                 chroma_persist_dir: Optional[str | Path] = None,
+                 chroma_collection_name: str = "memories",
+                 use_gam_card_document: bool = False):  
         """Initialize the memory system.
         
         Args:
@@ -112,16 +115,10 @@ class AgenticMemorySystem:
         """
         self.memories = {}
         self.model_name = model_name
-        # Initialize ChromaDB retriever with empty collection
-        try:
-            # First try to reset the collection if it exists
-            temp_retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
-            temp_retriever.client.reset()
-        except Exception as e:
-            logger.warning(f"Could not reset ChromaDB collection: {e}")
-            
-        # Create a fresh retriever instance
-        self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+        self._chroma_collection_name = chroma_collection_name
+        self._chroma_persist_dir = chroma_persist_dir
+        self._use_gam_card_document = use_gam_card_document
+        self.retriever = self._init_retriever(reset=(self._chroma_persist_dir is None))
         
         # Initialize LLM controller
         self.llm_controller = LLMController(llm_backend, llm_model, api_key, llm_service=llm_service)
@@ -163,6 +160,46 @@ class AgenticMemorySystem:
 
         # Regex to extract JSON content from markdown fenced code blocks.
         self._json_fence_re = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.IGNORECASE)
+
+    def _init_retriever(self, reset: bool = False) -> ChromaRetriever:
+        if self._chroma_persist_dir is None:
+            retriever = ChromaRetriever(
+                collection_name=self._chroma_collection_name,
+                model_name=self.model_name,
+            )
+            if reset:
+                try:
+                    retriever.client.reset()
+                except Exception as e:
+                    logger.warning(f"Could not reset ChromaDB collection: {e}")
+            return retriever
+
+        return PersistentChromaRetriever(
+            directory=self._chroma_persist_dir,
+            collection_name=self._chroma_collection_name,
+            model_name=self.model_name,
+            extend=True,
+        )
+
+    def _build_gam_card_text(self, note: "MemoryNote") -> str:
+        tags = ", ".join(note.tags or [])
+        keywords = ", ".join(note.keywords or [])
+        links = note.links or []
+        parts = [
+            f"content: {note.content}",
+            f"context: {note.context}",
+            f"category: {note.category}",
+            f"keywords: {keywords}",
+            f"tags: {tags}",
+            f"timestamp: {note.timestamp}",
+            f"links: {links}",
+        ]
+        return "\n".join(parts)
+
+    def _document_for_note(self, note: "MemoryNote") -> str:
+        if self._use_gam_card_document:
+            return self._build_gam_card_text(note)
+        return note.content
 
     def _parse_llm_json(self, response: Any) -> Any:
         """Parse JSON returned by an LLM, tolerating common wrappers.
@@ -341,7 +378,7 @@ class AgenticMemorySystem:
             "category": note.category,
             "tags": note.tags
         }
-        self.retriever.add_document(note.content, metadata, note.id)
+        self.retriever.add_document(self._document_for_note(note), metadata, note.id)
         
         if evo_label == True:
             self.evo_cnt += 1
@@ -351,8 +388,8 @@ class AgenticMemorySystem:
     
     def consolidate_memories(self):
         """Consolidate memories: update retriever with new documents"""
-        # Reset ChromaDB collection
-        self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+        # Reset ChromaDB collection when using ephemeral storage.
+        self.retriever = self._init_retriever(reset=(self._chroma_persist_dir is None))
         
         # Re-add all memory documents with their complete metadata
         for memory in self.memories.values():
@@ -369,7 +406,7 @@ class AgenticMemorySystem:
                 "category": memory.category,
                 "tags": memory.tags
             }
-            self.retriever.add_document(memory.content, metadata, memory.id)
+            self.retriever.add_document(self._document_for_note(memory), metadata, memory.id)
     
     def find_related_memories(self, query: str, k: int = 5) -> Tuple[str, List[int]]:
         """Find related memories using ChromaDB retrieval"""
@@ -477,7 +514,11 @@ class AgenticMemorySystem:
         
         # Delete and re-add to update
         self.retriever.delete_document(memory_id)
-        self.retriever.add_document(document=note.content, metadata=metadata, doc_id=memory_id)
+        self.retriever.add_document(
+            document=self._document_for_note(note),
+            metadata=metadata,
+            doc_id=memory_id,
+        )
         
         return True
     

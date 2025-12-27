@@ -31,6 +31,13 @@ except Exception:
     import warnings
     warnings.warn("DenseRetriever not available (FlagEmbedding dependencies may be missing)")
 
+try:
+    from .chroma_retriever import ChromaRetriever
+except Exception:
+    ChromaRetriever = None  # type: ignore
+    import warnings
+    warnings.warn("ChromaRetriever not available (chromadb dependencies may be missing)")
+
 __all__ = [
     "AbsRetriever",
     "IndexRetriever",
@@ -41,3 +48,5 @@ if BM25Retriever is not None:
     __all__.append("BM25Retriever")
 if DenseRetriever is not None:
     __all__.append("DenseRetriever")
+if ChromaRetriever is not None:
+    __all__.append("ChromaRetriever")
