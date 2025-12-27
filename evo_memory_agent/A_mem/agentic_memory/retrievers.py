@@ -78,7 +78,7 @@ class ChromaRetriever:
             else:
                 processed_metadata[key] = str(value)
 
-        self.collection.add(
+        self.collection.upsert(
             documents=[document], metadatas=[processed_metadata], ids=[doc_id]
         )
 
@@ -193,7 +193,10 @@ class PersistentChromaRetriever(ChromaRetriever):
         
         if collection_name in existing_collections:
             if extend:
-                self.collection = self.client.get_collection(name=collection_name)
+                self.collection = self.client.get_collection(
+                    name=collection_name,
+                    embedding_function=self.embedding_function,
+                )
             else:
                 raise ValueError(
                     f"Collection '{collection_name}' already exists. "

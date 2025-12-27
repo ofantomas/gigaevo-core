@@ -30,6 +30,10 @@ try:
     from GAM_root.gam.retriever import DenseRetriever
 except ImportError:
     DenseRetriever = None  # type: ignore
+try:
+    from GAM_root.gam.retriever import ChromaRetriever
+except ImportError:
+    ChromaRetriever = None  # type: ignore
 
 # Configurations
 from GAM_root.gam.config import (
@@ -71,6 +75,7 @@ __all__ = [
     "IndexRetriever",
     "BM25Retriever",
     "DenseRetriever",
+    "ChromaRetriever",
     
     # Configurations
     "OpenAIGeneratorConfig",
@@ -92,4 +97,3 @@ __all__ = [
     "InMemoryMemoryStore",
     "InMemoryPageStore",
 ]
-
