@@ -10,8 +10,8 @@ import config
 from GAM_root.gam import ResearchAgent
 from GAM_root.gam.generator import AMemGenerator
 
-from a_mem_memory_creation import export_memories_jsonl, add_memories_from_list
-from amem_gam_retriever import load_amem_records, build_retrievers, build_gam_store
+from shared_memory.a_mem_memory_creation import export_memories_jsonl, add_memories_from_list
+from shared_memory.amem_gam_retriever import load_amem_records, build_retrievers, build_gam_store
 
 
 class GigaEvoMemoryBase:

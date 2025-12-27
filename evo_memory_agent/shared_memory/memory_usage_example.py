@@ -5,8 +5,8 @@ from pathlib import Path
 
 import config
 
-from memory import AmemGamMemory
-from a_mem_memory_creation import pretty_print_memory
+from shared_memory.memory import AmemGamMemory
+from shared_memory.a_mem_memory_creation import pretty_print_memory
 
 
 def main():

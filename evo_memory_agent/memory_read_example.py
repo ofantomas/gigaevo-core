@@ -4,7 +4,7 @@ load_dotenv()
 from pathlib import Path
 
 import config
-from memory import AmemGamMemory
+from shared_memory.memory import AmemGamMemory
 
 
 MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "exp1"
@@ -32,7 +32,7 @@ def main():
 
     memory_state = "This task is heilborn packing task"
 
-    q1 = "What is most important thing in memory?"
+    q1 = "What can you tell about Farthest Point Sampling?"
     print(f">>> QUERY Q1: {q1!r}")
     result = memory.search(q1, memory_state=memory_state)
     print("\nResult Q1:\n")
