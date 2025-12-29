@@ -48,14 +48,16 @@ def load_amem_records(path: Path) -> List[Dict[str, Any]]:
 
 def make_card_text(record: Dict[str, Any]) -> str:
     tags = ", ".join(record.get("tags", []) or [])
+    strategy = record.get("strategy", "") or ""
     keywords = ", ".join(record.get("keywords", []) or [])
     links = record.get("links", []) or []
     parts = [
         f"content: {record.get('content', '')}",
-        f"context: {record.get('context', '')}",
-        f"category: {record.get('category', '')}",
+        f"task_description: {record.get('context', '')}",
+        f"task_name: {record.get('category', '')}",
         f"keywords: {keywords}",
         f"tags: {tags}",
+        f"strategy: {strategy}",
         f"timestamp: {record.get('timestamp', '')}",
         f"links: {links}",
     ]

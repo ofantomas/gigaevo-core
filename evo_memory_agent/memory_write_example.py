@@ -6,9 +6,11 @@ from pathlib import Path
 import config
 from shared_memory.memory import AmemGamMemory
 from shared_memory.a_mem_memory_creation import pretty_print_memory
+from ideas_for_memory import test_ideas
 
 
-MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "exp1"
+MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "exp4"
+ENABLE_MEMORY_EVOLUTION = False
 
 
 def main():
@@ -19,30 +21,57 @@ def main():
         )
 
     memory = AmemGamMemory(checkpoint_path=str(MEMORY_DIR), rebuild_interval=1000)
+    if not ENABLE_MEMORY_EVOLUTION:
+        # Skip the evolution step during note ingestion.
+        memory.memory_system.process_memory = lambda note: (False, note)
 
     print("\n==============================")
     print("A-MEM + GAM Demo: Memory formation")
     print("==============================\n")
 
-    memories = [
-        "Farthest Point Sampling replaced Sobol; created superior initial spread, foundational for +0.02519 fitness gain.",
-        "Added stagnation restart (500 iters); escaped local minima, critical for the +0.02519 metric improvement.",
-        # "Symmetric point distribution (5 left + axis + 5 right) eliminated parent's clustering; directly enabled +0.02231 area gain.",
-        # "20k-iteration simulated annealing targeting min area; explains full +0.02231 metric gain through systematic bottleneck optimization.",
-        # "Removed parent's rigid row-based grid (5->1 points) causing density clustering; removal eliminated small triangles, contributing to +0.02070 area gain.",
-        # "Introduced simulated annealing with temperature-controlled moves; explored configurations beyond parent's static grid, enabling +0.02070 min_area gain.",
-        # "Generalized perturbations to target min-triangle vertices (lines 40-50); direct refinement of critical regions increased min_area by 0.02070.",
-        # "Reduced boundary repulsion to 1e-6, preventing edge clustering; directly enabled +0.01855 area gain by eliminating degenerate boundary triangles.",
-        # "Enforced reflection symmetry via left/right mirroring; eliminated asymmetric clusters, directly contributing +0.01796 min_area gain.",
-        # "Introduced simulated annealing (T=0.01) to escape local minima; accepted worse moves, enabling 0.01796 improvement.",
-        # "Targeted perturbations to points in smallest triangle (found by triple loop); focused optimization on critical regions for +0.01796 gain.",
-        # "Reduced boundary repulsion threshold from 0.02 to 1e-6; enabled optimal boundary placement, explaining +0.01224 fitness gain.",
-    ]
+    memories = []
+    for task in test_ideas:
+        task_name = (task.get("task_name") or "").strip()
+        task_description = (task.get("task_description") or "").strip()
+        for idea in task.get("useful_ideas", []):
+            if isinstance(idea, dict):
+                text = (idea.get("idea") or idea.get("text") or "").strip()
+                strategy = (idea.get("strategy") or "").strip()
+            else:
+                text = (idea or "").strip()
+                strategy = ""
+            if not text:
+                continue
+            memories.append(
+                {
+                    "content": text,
+                    "task_name": task_name,
+                    "task_description": task_description,
+                    "strategy": strategy,
+                }
+            )
 
     print("1) Adding memories from list...\n")
     memory_ids = []
-    for text in memories:
-        mid = memory.save(text)
+    for item in memories:
+        analysis = memory.memory_system.analyze_content(item["content"])
+        strategy = item.get("strategy") or ""
+        tags = analysis.get("tags") or []
+        keywords = analysis.get("keywords") or []
+        context = item.get("task_description") or analysis.get("context") or "General"
+        mid = memory.memory_system.add_note(
+            content=item["content"],
+            tags=tags,
+            category=item.get("task_name") or "general",
+            keywords=keywords,
+            context=context,
+            strategy=strategy,
+        )
+        memory.memory_ids.add(mid)
+        memory._iters_after_rebuild += 1
+        if memory._iters_after_rebuild >= memory.rebuild_interval:
+            memory.rebuild()
+            memory._iters_after_rebuild = 0
         memory_ids.append(mid)
 
     for idx, mid in enumerate(memory_ids, start=1):

@@ -47,7 +47,8 @@ class MemoryNote:
                  context: Optional[str] = None,
                  evolution_history: Optional[List] = None,
                  category: Optional[str] = None,
-                 tags: Optional[List[str]] = None):
+                 tags: Optional[List[str]] = None,
+                 strategy: Optional[str] = None):
         """Initialize a new memory note with its associated metadata.
         
         Args:
@@ -73,6 +74,7 @@ class MemoryNote:
         self.context = context or "General"
         self.category = category or "Uncategorized"
         self.tags = tags or []
+        self.strategy = strategy or ""
         
         # Temporal information
         current_time = datetime.now().strftime("%Y%m%d%H%M")
@@ -187,10 +189,11 @@ class AgenticMemorySystem:
         links = note.links or []
         parts = [
             f"content: {note.content}",
-            f"context: {note.context}",
-            f"category: {note.category}",
+            f"task_description: {note.context}",
+            f"task_name: {note.category}",
             f"keywords: {keywords}",
             f"tags: {tags}",
+            f"strategy: {note.strategy}",
             f"timestamp: {note.timestamp}",
             f"links: {links}",
         ]
@@ -376,7 +379,8 @@ class AgenticMemorySystem:
             "context": note.context,
             "evolution_history": note.evolution_history,
             "category": note.category,
-            "tags": note.tags
+            "tags": note.tags,
+            "strategy": note.strategy,
         }
         self.retriever.add_document(self._document_for_note(note), metadata, note.id)
         
@@ -404,7 +408,8 @@ class AgenticMemorySystem:
                 "context": memory.context,
                 "evolution_history": memory.evolution_history,
                 "category": memory.category,
-                "tags": memory.tags
+                "tags": memory.tags,
+                "strategy": memory.strategy,
             }
             self.retriever.add_document(self._document_for_note(memory), metadata, memory.id)
     

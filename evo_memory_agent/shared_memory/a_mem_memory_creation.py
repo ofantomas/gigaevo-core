@@ -57,6 +57,7 @@ def _memory_to_dict(mem):
         "category": _safe_get(mem, "category", None),
         "timestamp": _safe_get(mem, "timestamp", None),
         "tags": _safe_get(mem, "tags", []) or [],
+        "strategy": _safe_get(mem, "strategy", ""),
         "keywords": _safe_get(mem, "keywords", []) or [],
         "context": _safe_get(mem, "context", ""),
         "links": (
