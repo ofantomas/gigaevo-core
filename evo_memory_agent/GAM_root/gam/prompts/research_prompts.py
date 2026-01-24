@@ -30,8 +30,8 @@ All of the following retrieval tools are available to you. You may select one, s
      Exact keyword match retrieval.
      It finds pages that contain specific names, function names, key attributes, etc.
    - HOW TO USE:
-     Provide short, high-signal keywords.
-     Do NOT write long natural-language questions here. Use crisp keywords and phrases that should literally appear in relevant text.
+     Provide short, high-signal keywords. Each keyword should be 1 word or abbreviation only.
+     Do NOT write long natural-language questions here. Use crisp keywords that should literally appear in relevant text.
 
 2. "vector"
    - WHAT IT DOES:
@@ -69,8 +69,8 @@ OUTPUT JSON SPEC
 Return ONE JSON object with EXACTLY these keys:
 - "info_needs": array of strings (required)
 - "tools": array of strings from ["keyword","vector","page_index"] (required)
-- "keyword_collection": array of strings (required)
-- "vector_queries": array of strings (required)
+- "keyword_collection": array of strings (required), max 5
+- "vector_queries": array of strings (required), max 2
 - "page_index": array of integers (required), max 5.
 
 All keys MUST appear.

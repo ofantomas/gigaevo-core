@@ -234,6 +234,9 @@ class ResearchAgent:
 
             if tool == "keyword":
                 if plan.keyword_collection:
+                    print("[GAM] Keyword queries:")
+                    for q in plan.keyword_collection:
+                        print(f"  - {q}")
                     # 将多个关键词拼接成一个字符串进行搜索
                     combined_keywords = " ".join(plan.keyword_collection)
                     keyword_results = self._search_by_keyword([combined_keywords], top_k=5)
@@ -243,10 +246,23 @@ class ResearchAgent:
                             hits.extend(result_list)
                     else:
                         hits.extend(keyword_results)
+                    if hits:
+                        print("[GAM] Keyword hits:")
+                        for i, hit in enumerate(hits, 1):
+                            score = hit.meta.get("score") if hit.meta else None
+                            score_str = f" score={score}" if score is not None else ""
+                            page_id = hit.page_id if hit.page_id else "n/a"
+                            print(f"  {i:02d}. source={hit.source} page_id={page_id}{score_str}")
+                            print(f"      {hit.snippet}")
+                    else:
+                        print("[GAM] Keyword hits: (none)")
                     all_hits.extend(hits)
                     
             elif tool == "vector":
                 if plan.vector_queries:
+                    print("[GAM] Vector queries:")
+                    for q in plan.vector_queries:
+                        print(f"  - {q}")
                     # 对每个向量查询都进行独立的搜索，然后在retriever层面聚合得分
                     vector_results = self._search_by_vector(plan.vector_queries, top_k=5)
                     # Flatten the results if they come as List[List[Hit]]
@@ -255,6 +271,16 @@ class ResearchAgent:
                             hits.extend(result_list)
                     else:
                         hits.extend(vector_results)
+                    if hits:
+                        print("[GAM] Vector hits:")
+                        for i, hit in enumerate(hits, 1):
+                            score = hit.meta.get("score") if hit.meta else None
+                            score_str = f" score={score}" if score is not None else ""
+                            page_id = hit.page_id if hit.page_id else "n/a"
+                            print(f"  {i:02d}. source={hit.source} page_id={page_id}{score_str}")
+                            print(f"      {hit.snippet}")
+                    else:
+                        print("[GAM] Vector hits: (none)")
                     all_hits.extend(hits)
                     
             elif tool == "page_index":

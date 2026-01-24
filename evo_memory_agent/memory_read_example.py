@@ -1,13 +1,15 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import os
 from pathlib import Path
 
 import config
 from shared_memory.memory import AmemGamMemory
 
 
-MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "exp1"
+MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "musique"
+USE_BM25 = True
 
 
 def main():
@@ -24,16 +26,21 @@ def main():
             "Run memory_formation_example.py first."
         )
 
-    memory = AmemGamMemory(checkpoint_path=str(MEMORY_DIR), rebuild_interval=1000)
+    memory = AmemGamMemory(
+        checkpoint_path=str(MEMORY_DIR),
+        rebuild_interval=1000,
+        enable_bm25=USE_BM25,
+    )
 
     print("\n==============================")
     print("A-MEM + GAM Demo: Memory search")
     print("==============================\n")
 
-    memory_state = "This task is heilborn packing task"
+    memory_state = ""
 
-    q1 = "What can you tell about Farthest Point Sampling?"
+    q1 = "What team drafted the recent winner of the NBA scoring title?"
     print(f">>> QUERY Q1: {q1!r}")
+
     result = memory.search(q1, memory_state=memory_state)
     print("\nResult Q1:\n")
     print(result)
