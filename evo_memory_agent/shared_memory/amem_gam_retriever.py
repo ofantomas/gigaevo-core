@@ -20,6 +20,7 @@ from GAM_root.gam import (
     IndexRetrieverConfig,
     ChromaRetriever,
 )
+from GAM_root.gam.retriever.bm25 import BM25Retriever
 from GAM_root.gam.generator import AMemGenerator
 from GAM_root.gam.schemas import Page
 
@@ -94,6 +95,7 @@ def build_retrievers(
     index_dir: Path,
     chroma_dir: Path,
     chroma_collection: str = "memories",
+    enable_bm25: bool = False,
 ):
     retrievers = {}
 
@@ -117,6 +119,16 @@ def build_retrievers(
         print("✅ Chroma retriever ready")
     except Exception as e:
         print(f"[WARN] Chroma retriever init from {ChromaRetriever} failed: {e}")
+
+    if enable_bm25:
+        try:
+            bm25_config = {"index_dir": str(index_dir / "bm25")}
+            bm25_retriever = BM25Retriever(bm25_config)
+            bm25_retriever.build(page_store)
+            retrievers["keyword"] = bm25_retriever
+            print("✅ BM25 retriever ready")
+        except Exception as e:
+            print(f"[WARN] BM25 retriever init failed: {e}")
 
     return retrievers
 

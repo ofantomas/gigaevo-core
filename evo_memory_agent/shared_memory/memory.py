@@ -25,7 +25,12 @@ class GigaEvoMemoryBase:
         raise NotImplementedError
 
 class AmemGamMemory(GigaEvoMemoryBase):
-    def __init__(self, checkpoint_path: str, rebuild_interval: int = 10):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        rebuild_interval: int = 10,
+        enable_bm25: bool = False,
+    ):
         # Treat checkpoint_path as a directory that holds:
         # - amem_exports/amem_memories.jsonl (A-mem export)
         # - gam_shared/amem_store/ (GAM store + indexes)
@@ -39,6 +44,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
         self.export_file = self.checkpoint_dir / "amem_exports" / "amem_memories.jsonl"
         self.gam_store_dir = self.checkpoint_dir / "gam_shared" / "amem_store"
 
+        self.enable_bm25 = enable_bm25
         self.research_agent = self._load_or_create_retriever()
 
     def _init_storage(self):
@@ -85,6 +91,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
             page_store,
             self.gam_store_dir / "indexes",
             self.checkpoint_dir / "chroma",
+            enable_bm25=self.enable_bm25,
         )
         research_agent = ResearchAgent(
             page_store=page_store,
