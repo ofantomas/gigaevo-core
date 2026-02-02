@@ -22,15 +22,14 @@ LLM_CONFIG = {
     },
 }
 
-# Dataset configuration
 DATASET_CONFIG = {
-    "path": "problems/prompts/jigsaw_community_rules/dataset/data.csv",
-    "required_placeholders": ["body", "rule"],
-    "target_field": "rule_violation",
+    "train_path": "problems/prompts/ifbench/dataset/IFBench_train.jsonl",
+    "test_path": "problems/prompts/ifbench/dataset/IFBench_test.jsonl",
+    "required_placeholders": ["prompt"],
 }
 
 
-def load_context() -> dict:
+def load_context(n_samples: int = 300) -> dict:
     """Load dataset and return context for validation.
 
     Returns:
@@ -38,13 +37,11 @@ def load_context() -> dict:
             - train_dataset (pd.DataFrame): Dataset for evaluation
             - available_placeholders (list[str]): Column names usable in templates
             - required_placeholders (list[str]): Fields that MUST be in template
-            - target_field (str): Target/label column name
     """
-    train_dataset = pd.read_csv(DATASET_CONFIG["path"]).reset_index(drop=True)
+    train_dataset = pd.read_json(DATASET_CONFIG["train_path"], lines=True)[:n_samples]
 
     return {
         "train_dataset": train_dataset,
-        "available_placeholders": list(train_dataset.columns),
+        "available_placeholders": DATASET_CONFIG["required_placeholders"],
         "required_placeholders": DATASET_CONFIG["required_placeholders"],
-        "target_field": DATASET_CONFIG["target_field"],
     }
