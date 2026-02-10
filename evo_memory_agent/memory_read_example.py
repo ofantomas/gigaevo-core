@@ -8,7 +8,7 @@ import config
 from shared_memory.memory import AmemGamMemory
 
 
-MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "musique"
+MEMORY_DIR = Path(__file__).resolve().parent / "memory_usage_store" / "exp4"
 USE_BM25 = True
 
 
@@ -38,7 +38,7 @@ def main():
 
     memory_state = ""
 
-    q1 = "What team drafted the recent winner of the NBA scoring title?"
+    q1 = "Find ideas that can help to solve this problem:  **OBJECTIVE**: Write a Python function that arranges exactly **9 non-overlapping circles with variable radii** inside a unit square [0, 1] × [0, 1] to **maximize the total sum of their radii**."
     print(f">>> QUERY Q1: {q1!r}")
 
     result = memory.search(q1, memory_state=memory_state)
