@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
 
 
 THIS_DIR = Path(__file__).resolve().parent
-load_dotenv(dotenv_path=THIS_DIR / ".env", override=True)
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env", override=True)
 
 SETTINGS_PATH = resolve_settings_path()
 SETTINGS = load_settings(SETTINGS_PATH)

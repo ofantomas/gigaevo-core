@@ -15,7 +15,7 @@ _AGENT_ROOT = _THIS_DIR.parent
 if str(_AGENT_ROOT) not in sys.path:
     sys.path.insert(0, str(_AGENT_ROOT))
 
-from A_mem.agent.agent_class import LLMService
+from openai_inference import OpenAIInferenceService
 
 import config
 
@@ -405,24 +405,37 @@ class AmemGamMemory(GigaEvoMemoryBase):
         self._ResearchAgentCls = _ResearchAgent
         self._AMemGeneratorCls = _AMemGenerator
 
-    def _init_llm_service_and_generator(self) -> tuple[LLMService | None, Any | None]:
+    def _init_llm_service_and_generator(self) -> tuple[Any | None, Any | None]:
         if self._AMemGeneratorCls is None:
             return None, None
-        if not config.OPENROUTER_API_KEY:
+        api_key = config.OPENAI_API_KEY
+        if not api_key and config.LLM_BASE_URL:
+            # Local OpenAI-compatible servers (vLLM/LM Studio/Ollama OpenAI mode)
+            # often accept any non-empty bearer token.
+            api_key = "EMPTY"
+
+        if not api_key:
             print(
-                "[Memory] OPENROUTER_API_KEY is not set. "
+                "[Memory] OPENAI_API_KEY/OPENROUTER_API_KEY is not set. "
                 "Agentic retrieval is disabled; API full-text fallback is available."
             )
             return None, None
 
         try:
-            llm_service = LLMService(
-                service=config.OPENROUTER_SERVICE,
+            base_url = config.LLM_BASE_URL
+            if (
+                not base_url
+                and str(config.OPENROUTER_SERVICE).strip().lower() == "openrouter_openai"
+            ):
+                base_url = "https://openrouter.ai/api/v1"
+
+            llm_service = OpenAIInferenceService(
                 model_name=config.OPENROUTER_MODEL_NAME,
-                api_key=config.OPENROUTER_API_KEY,
+                api_key=api_key,
+                base_url=base_url,
                 temperature=0.0,
                 max_tokens=0,
-                reasoning_effort="low",
+                reasoning=config.OPENROUTER_REASONING,
             )
             generator = self._AMemGeneratorCls({"llm_service": llm_service})
             return llm_service, generator

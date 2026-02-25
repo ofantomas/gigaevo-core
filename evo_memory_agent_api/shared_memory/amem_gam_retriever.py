@@ -1,5 +1,5 @@
 """
-GAM retriever script that loads A-mem exports and uses A-mem LLMService.
+GAM retriever script that loads A-mem exports and uses OpenAI-style inference.
 """
 
 from __future__ import annotations
@@ -30,11 +30,11 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-_amem_root = _repo_root() / "A-mem-main"
-if str(_amem_root) not in sys.path:
-    sys.path.insert(0, str(_amem_root))
+_AGENT_ROOT = _repo_root()
+if str(_AGENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_AGENT_ROOT))
 
-from A_mem.agent.agent_class import LLMService
+from openai_inference import OpenAIInferenceService
 
 def load_amem_records(path: Path) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
@@ -199,12 +199,30 @@ def main():
     memory_store, page_store, added = build_gam_store(records, store_dir)
     print(f"Loaded {len(records)} A-mem records, added {added} new pages.")
 
-    llm_service = LLMService(
-        service=config.OPENROUTER_SERVICE,
+    api_key = config.OPENAI_API_KEY
+    if not api_key and config.LLM_BASE_URL:
+        api_key = "EMPTY"
+
+    if not api_key:
+        raise RuntimeError(
+            "Missing OPENAI_API_KEY/OPENROUTER_API_KEY env var. "
+            "Set one before running this retriever."
+        )
+
+    base_url = config.LLM_BASE_URL
+    if (
+        not base_url
+        and str(config.OPENROUTER_SERVICE).strip().lower() == "openrouter_openai"
+    ):
+        base_url = "https://openrouter.ai/api/v1"
+
+    llm_service = OpenAIInferenceService(
         model_name=config.OPENROUTER_MODEL_NAME,
-        api_key=config.OPENROUTER_API_KEY,
+        api_key=api_key,
+        base_url=base_url,
         temperature=0.0,
         max_tokens=2048,
+        reasoning=config.OPENROUTER_REASONING,
     )
     generator = AMemGenerator({"llm_service": llm_service})
 

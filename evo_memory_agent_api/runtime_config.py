@@ -10,7 +10,12 @@ except Exception:  # pragma: no cover - defensive fallback
     yaml = None  # type: ignore[assignment]
 
 
-DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parent / "config.yaml"
+_MODULE_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _MODULE_DIR.parent
+_DEFAULT_SETTINGS_PATHS = (
+    _PROJECT_ROOT / "config" / "memory.yaml",
+    _MODULE_DIR / "config.yaml",
+)
 
 
 def resolve_settings_path(path: str | Path | None = None) -> Path:
@@ -25,7 +30,11 @@ def resolve_settings_path(path: str | Path | None = None) -> Path:
     if from_env:
         return Path(from_env)
 
-    return DEFAULT_SETTINGS_PATH
+    for candidate in _DEFAULT_SETTINGS_PATHS:
+        if candidate.exists():
+            return candidate
+
+    return _DEFAULT_SETTINGS_PATHS[0]
 
 
 def load_settings(path: str | Path | None = None) -> dict[str, Any]:

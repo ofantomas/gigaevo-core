@@ -1,12 +1,18 @@
 import json
+import sys
 from dotenv import load_dotenv
 load_dotenv()
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+_THIS_DIR = Path(__file__).resolve().parent
+_AGENT_ROOT = _THIS_DIR.parent
+if str(_AGENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_AGENT_ROOT))
+
 from A_mem.agentic_memory.memory_system import AgenticMemorySystem
-from A_mem.agent.agent_class import LLMService
 import config
+from openai_inference import OpenAIInferenceService
 
 
 # -----------------------------
@@ -179,25 +185,37 @@ def add_memories_from_list(memory_system, memories, category="heilbron"):
 # Demo script
 # -----------------------------
 def main():
-    # Configure OpenRouter-backed LLMService
-    if not config.OPENROUTER_API_KEY:
+    # Configure OpenAI-compatible inference service (OpenRouter supported via base_url).
+    api_key = config.OPENAI_API_KEY
+    if not api_key and config.LLM_BASE_URL:
+        api_key = "EMPTY"
+
+    if not api_key:
         raise RuntimeError(
-            "Missing OPENROUTER_API_KEY env var. "
-            "Set it first, e.g.: export OPENROUTER_API_KEY='...'"
+            "Missing OPENAI_API_KEY/OPENROUTER_API_KEY env var. "
+            "Set one first, e.g.: export OPENAI_API_KEY='...'"
         )
 
-    llm_service = LLMService(
-        service=config.OPENROUTER_SERVICE,
+    base_url = config.LLM_BASE_URL
+    if (
+        not base_url
+        and str(config.OPENROUTER_SERVICE).strip().lower() == "openrouter_openai"
+    ):
+        base_url = "https://openrouter.ai/api/v1"
+
+    llm_service = OpenAIInferenceService(
         model_name=config.OPENROUTER_MODEL_NAME,
-        api_key=config.OPENROUTER_API_KEY,
+        api_key=api_key,
+        base_url=base_url,
         temperature=0,
         max_tokens=0,
+        reasoning=config.OPENROUTER_REASONING,
     )
 
     # Initialize the memory system 🚀
     memory_system = AgenticMemorySystem(
         model_name=config.AMEM_EMBEDDING_MODEL_NAME,  # Embedding model for ChromaDB
-        llm_backend="custom",           # Use external LLMService
+        llm_backend="custom",           # Use external inference service
         llm_service=llm_service,
     )
 
