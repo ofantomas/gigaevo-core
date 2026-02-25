@@ -423,11 +423,6 @@ class AmemGamMemory(GigaEvoMemoryBase):
 
         try:
             base_url = config.LLM_BASE_URL
-            if (
-                not base_url
-                and str(config.OPENROUTER_SERVICE).strip().lower() == "openrouter_openai"
-            ):
-                base_url = "https://openrouter.ai/api/v1"
 
             llm_service = OpenAIInferenceService(
                 model_name=config.OPENROUTER_MODEL_NAME,

@@ -103,7 +103,6 @@ MEMORY_API_URL=http://localhost:8000
 MEMORY_NAMESPACE=exp5
 MEMORY_USE_API=true
 OPENROUTER_API_KEY=...
-OPENROUTER_SERVICE=openrouter_openai
 OPENROUTER_MODEL_NAME=openai/gpt-4.1-mini
 ```
 
