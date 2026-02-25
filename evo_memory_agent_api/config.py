@@ -33,10 +33,6 @@ OPENROUTER_API_KEY = _normalize_env(
     or to_str(deep_get(_SETTINGS, "models.openai_api_key"), default=None)
 )
 
-OPENROUTER_SERVICE = os.getenv(
-    "OPENROUTER_SERVICE",
-    to_str(deep_get(_SETTINGS, "models.openrouter_service"), default="openrouter_openai"),
-)
 OPENROUTER_MODEL_NAME = os.getenv(
     "OPENROUTER_MODEL_NAME",
     to_str(deep_get(_SETTINGS, "models.openrouter_model_name"), default="openai/gpt-4.1-mini"),
