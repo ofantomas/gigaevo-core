@@ -1,0 +1,62 @@
+paths:
+  checkpoint_dir: memory_usage_store/api_exp4
+  cards_path: new_mem_example.json
+  banks_path: ../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/banks.json
+  best_ideas_path: ../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/best_ideas.json
+
+api:
+  base_url: http://localhost:8000
+  namespace: exp9
+  use_api: false
+  channel: latest
+  author: null
+
+runtime:
+  # Controls whether search responses are synthesized by LLM when needed.
+  enable_llm_synthesis: false
+
+  # Controls whether A-MEM process_memory() evolution runs on writes.
+  # When false, no should_evolve/actions LLM call is made in add_note().
+  should_evolve: false
+
+  # New flag: when false, save_card() does not call analyze_content() to auto-fill
+  # missing card fields (keywords/task_description) with LLM assistance.
+  fill_missing_fields_with_llm: false
+
+  # Other runtime knobs migrated from code defaults.
+  search_limit: 5
+  rebuild_interval: 30
+  sync_batch_size: 100
+  sync_on_init: true
+
+gam:
+  enable_bm25: false
+
+  # Research pipeline mode.
+  # - default: existing plan -> retrieve -> integrate -> reflection loop
+  # - experimental: plan -> retrieve -> reflection(select top3 OR request more) loop
+  pipeline_mode: experimental
+
+  # Allowed GAM planning/search tools.
+  # Supported values:
+  #   page_index, keyword, vector,
+  #   vector_description, vector_task_description, vector_explanation_summary
+  allowed_tools:
+    - page_index
+    - vector
+
+  # Maximum retrieval hits (top_k) per GAM tool.
+  top_k_by_tool:
+    keyword: 5
+    vector: 3
+    vector_description: 3
+    vector_task_description: 0
+    vector_explanation_summary: 3
+    page_index: 5
+
+models:
+  # Values used by evo_memory_agent_api/config.py if env vars are not set.
+  openrouter_service: openrouter_openai
+  openrouter_model_name: google/gemini-3-flash-preview
+  amem_embedding_model_name: all-MiniLM-L6-v2
+  gam_dense_retriever_model_name: BAAI/bge-m3
