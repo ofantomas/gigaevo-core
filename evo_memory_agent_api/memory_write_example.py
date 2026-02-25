@@ -27,7 +27,7 @@ except ImportError:  # pragma: no cover - direct script execution fallback
         to_str,
     )
 
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env", override=True)
 
 try:
     from .shared_memory.memory import AmemGamMemory
@@ -39,24 +39,33 @@ THIS_DIR = Path(__file__).resolve().parent
 SETTINGS_PATH = resolve_settings_path()
 SETTINGS = load_settings(SETTINGS_PATH)
 
+_BANKS_DIR = resolve_local_path(
+    THIS_DIR,
+    deep_get(SETTINGS, "paths.banks_dir"),
+    default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02",
+)
+
 MEMORY_DIR = resolve_local_path(
     THIS_DIR,
     deep_get(SETTINGS, "paths.checkpoint_dir"),
     default_relative="memory_usage_store/api_exp1",
 )
-CARDS_PATH = resolve_local_path(
-    THIS_DIR,
-    deep_get(SETTINGS, "paths.cards_path"),
-    default_relative="new_mem_example.json",
-)
 BANKS_PATH = resolve_local_path(
     THIS_DIR,
-    os.getenv("MEMORY_BANKS_PATH") or deep_get(SETTINGS, "paths.banks_path"),
+    (
+        os.getenv("MEMORY_BANKS_PATH")
+        or deep_get(SETTINGS, "paths.banks_path")
+        or str(_BANKS_DIR / "banks.json")
+    ),
     default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/banks.json",
 )
 BEST_IDEAS_PATH = resolve_local_path(
     THIS_DIR,
-    os.getenv("MEMORY_BEST_IDEAS_PATH") or deep_get(SETTINGS, "paths.best_ideas_path"),
+    (
+        os.getenv("MEMORY_BEST_IDEAS_PATH")
+        or deep_get(SETTINGS, "paths.best_ideas_path")
+        or str(_BANKS_DIR / "best_ideas.json")
+    ),
     default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/best_ideas.json",
 )
 
@@ -209,12 +218,10 @@ def _load_banks_cards(path: Path, best_ideas_path: Path) -> list[dict]:
     return selected_cards
 
 
-def load_memory_cards(path: Path, best_ideas_path: Path | None = None) -> list[dict]:
+def load_memory_cards(path: Path, best_ideas_path: Path) -> list[dict]:
     payload = _load_json(path)
 
     if isinstance(payload, dict) and "active_bank" in payload:
-        if best_ideas_path is None:
-            raise ValueError("best_ideas_path is required when loading banks.json format")
         return _load_banks_cards(path, best_ideas_path)
     if (
         isinstance(payload, list)
@@ -222,21 +229,11 @@ def load_memory_cards(path: Path, best_ideas_path: Path | None = None) -> list[d
         and isinstance(payload[0], dict)
         and "active_bank" in payload[0]
     ):
-        if best_ideas_path is None:
-            raise ValueError("best_ideas_path is required when loading banks.json format")
         return _load_banks_cards(path, best_ideas_path)
 
-    if isinstance(payload, list):
-        cards = payload
-    elif isinstance(payload, dict) and isinstance(payload.get("cards"), list):
-        cards = payload["cards"]
-    else:
-        raise ValueError(
-            "Invalid cards JSON format. Expected either a JSON array of cards "
-            'or an object like {"cards": [...]} '
-        )
-
-    return [card for card in cards if isinstance(card, dict)]
+    raise ValueError(
+        "Invalid banks JSON format. Expected payload with 'active_bank' and 'inactive_bank'."
+    )
 
 
 def main() -> None:
@@ -267,16 +264,13 @@ def main() -> None:
     print(f"Memory evolution enabled: {SHOULD_EVOLVE}")
     print(f"LLM field fill enabled: {FILL_MISSING_FIELDS_WITH_LLM}")
 
-    input_path = BANKS_PATH if BANKS_PATH.exists() else CARDS_PATH
-    if input_path == BANKS_PATH:
-        memory_cards = load_memory_cards(input_path, best_ideas_path=BEST_IDEAS_PATH)
-        print(
-            f"Loaded {len(memory_cards)} cards from banks: {BANKS_PATH} "
-            f"(filtered by: {BEST_IDEAS_PATH})"
-        )
-    else:
-        memory_cards = load_memory_cards(input_path)
-        print(f"Loaded {len(memory_cards)} cards from: {input_path}")
+    if not BANKS_PATH.exists():
+        raise FileNotFoundError(f"Banks file not found: {BANKS_PATH}")
+    memory_cards = load_memory_cards(BANKS_PATH, best_ideas_path=BEST_IDEAS_PATH)
+    print(
+        f"Loaded {len(memory_cards)} cards from banks: {BANKS_PATH} "
+        f"(filtered by: {BEST_IDEAS_PATH})"
+    )
     if USE_API:
         print(f"Writing to API: {MEMORY_API_URL} (namespace={NAMESPACE})\n")
     else:
