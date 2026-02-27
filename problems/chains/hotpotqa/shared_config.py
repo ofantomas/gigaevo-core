@@ -19,11 +19,11 @@ LLM_CONFIG = {
         "extra_body": {
             "top_k": 20,
         },
-        "max_tokens": 8192,
+        "max_tokens": 4096,
     },
     "client_kwargs": {
         "api_key": "None",
-        "base_url": "http://10.226.17.25:8000/v1",
+        "base_url": "http://10.226.17.25:8001/v1",
     },
 }
 
