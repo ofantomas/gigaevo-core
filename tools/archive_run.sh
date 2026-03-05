@@ -26,7 +26,7 @@
 set -euo pipefail
 
 PYTHON=/home/jovyan/envs/evo_fast/bin/python
-GH=/home/jovyan/envs/evo_fast/bin/gh
+GH=$(command -v gh)
 PROJ="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
 # ── Argument parsing ────────────────────────────────────────────────────────
