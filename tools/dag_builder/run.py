@@ -1,4 +1,4 @@
-#!/home/jovyan/.mlspace/envs/main/bin/python
+#!/usr/bin/env python3
 """
 Start the DAG Builder API server.
 """
