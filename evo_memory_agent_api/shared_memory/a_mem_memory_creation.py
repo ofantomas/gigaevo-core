@@ -86,6 +86,9 @@ def normalize_memory_card(
         "category": str(card.get("category") or "general"),
         "description": str(card.get("description") or card.get("content") or ""),
         "task_description": str(card.get("task_description") or card.get("context") or ""),
+        "task_description_summary": str(
+            card.get("task_description_summary") or card.get("context_summary") or ""
+        ),
         "strategy": str(card.get("strategy") or ""),
         "last_generation": _to_int(card.get("last_generation"), default=0),
         "programs": _to_list(card.get("programs")),
