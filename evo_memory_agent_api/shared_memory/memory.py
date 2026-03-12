@@ -1311,6 +1311,11 @@ class AmemGamMemory(GigaEvoMemoryBase):
     def save_card(self, card: dict[str, Any]) -> str:
         normalized_card = normalize_memory_card(card)
         self.card_write_stats["processed"] += 1
+        incoming_card_id = str(normalized_card.get("id") or "").strip()
+        if incoming_card_id and incoming_card_id in self.memory_cards:
+            self.card_write_stats["updated"] += 1
+            return self._save_card_core(normalized_card)
+
         if (
             self.card_update_dedup_config.enabled
             and self.memory_cards

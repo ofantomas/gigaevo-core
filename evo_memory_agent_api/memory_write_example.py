@@ -1,7 +1,9 @@
 from pathlib import Path
 from datetime import datetime, timezone
 import json
+import math
 import os
+import statistics
 from typing import Any
 from dotenv import load_dotenv
 
@@ -68,6 +70,27 @@ BEST_IDEAS_PATH = resolve_local_path(
         or str(_BANKS_DIR / "best_ideas.json")
     ),
     default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/best_ideas.json",
+)
+ENABLE_USAGE_TRACKING = to_bool(
+    deep_get(SETTINGS, "ideas_tracker.usage_tracking.enabled"),
+    default=True,
+)
+_USAGE_UPDATES_RAW_PATH = (
+    (
+        os.getenv("MEMORY_USAGE_UPDATES_PATH")
+        or deep_get(SETTINGS, "paths.memory_usage_updates_path")
+    )
+    if ENABLE_USAGE_TRACKING
+    else None
+)
+USAGE_UPDATES_PATH = (
+    resolve_local_path(
+        THIS_DIR,
+        _USAGE_UPDATES_RAW_PATH,
+        default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/memory_usage_updates.json",
+    )
+    if _USAGE_UPDATES_RAW_PATH
+    else None
 )
 
 MEMORY_API_URL = os.getenv(
@@ -140,6 +163,146 @@ def _latest_snapshot(payload: Any, required_key: str) -> dict[str, Any]:
         raise ValueError(f"No snapshot with key '{required_key}' found in payload list")
 
     raise ValueError("Invalid snapshot JSON format. Expected a dict or list of dict snapshots")
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(parsed) or math.isinf(parsed):
+        return None
+    return parsed
+
+
+def _median_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(statistics.median(values))
+
+
+def _extract_usage_task_deltas(usage: Any) -> dict[str, list[float]]:
+    if not isinstance(usage, dict):
+        return {}
+    used = usage.get("used")
+    if not isinstance(used, dict):
+        return {}
+    entries = used.get("entries")
+    if not isinstance(entries, list):
+        return {}
+
+    task_to_deltas: dict[str, list[float]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        task_summary = str(entry.get("task_description_summary") or "").strip()
+        if not task_summary:
+            continue
+        raw_deltas = entry.get("fitness_delta_per_use")
+        if raw_deltas is None:
+            raw_deltas = entry.get("fitness_deltas")
+        if not isinstance(raw_deltas, list):
+            continue
+
+        deltas: list[float] = []
+        for raw_delta in raw_deltas:
+            parsed = _to_float(raw_delta)
+            if parsed is not None:
+                deltas.append(parsed)
+        if not deltas:
+            continue
+        task_to_deltas.setdefault(task_summary, []).extend(deltas)
+    return task_to_deltas
+
+
+def _build_usage_payload_from_task_deltas(task_to_deltas: dict[str, list[float]]) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    total_deltas: list[float] = []
+
+    for task_summary in sorted(task_to_deltas):
+        deltas = [
+            parsed
+            for raw in task_to_deltas.get(task_summary, [])
+            if (parsed := _to_float(raw)) is not None
+        ]
+        if not deltas:
+            continue
+        entries.append(
+            {
+                "task_description_summary": task_summary,
+                "used_count": len(deltas),
+                "fitness_delta_per_use": deltas,
+                "median_delta_fitness": _median_or_none(deltas),
+            }
+        )
+        total_deltas.extend(deltas)
+
+    return {
+        "used": {
+            "entries": entries,
+            "total": {
+                "total_used": len(total_deltas),
+                "median_delta_fitness": _median_or_none(total_deltas),
+            },
+        }
+    }
+
+
+def _merge_usage_payloads(existing_usage: Any, incoming_usage: Any) -> dict[str, Any]:
+    existing_task_deltas = _extract_usage_task_deltas(existing_usage)
+    incoming_task_deltas = _extract_usage_task_deltas(incoming_usage)
+    if not existing_task_deltas and not incoming_task_deltas:
+        if isinstance(existing_usage, dict):
+            return dict(existing_usage)
+        if isinstance(incoming_usage, dict):
+            return dict(incoming_usage)
+        return {}
+
+    merged_task_deltas: dict[str, list[float]] = {
+        task: list(deltas) for task, deltas in existing_task_deltas.items()
+    }
+    for task_summary, deltas in incoming_task_deltas.items():
+        merged_task_deltas.setdefault(task_summary, []).extend(deltas)
+
+    merged_usage: dict[str, Any] = (
+        dict(existing_usage) if isinstance(existing_usage, dict) else {}
+    )
+    if isinstance(incoming_usage, dict):
+        for key, value in incoming_usage.items():
+            if key != "used":
+                merged_usage[key] = value
+    merged_usage["used"] = _build_usage_payload_from_task_deltas(merged_task_deltas)["used"]
+    return merged_usage
+
+
+def _load_usage_updates(path: Path | None) -> dict[str, dict[str, Any]]:
+    if path is None or not path.exists():
+        return {}
+
+    payload = _load_json(path)
+    if isinstance(payload, list):
+        snapshots = [
+            item
+            for item in payload
+            if isinstance(item, dict) and isinstance(item.get("usage_updates"), dict)
+        ]
+        if snapshots:
+            payload = snapshots[-1]["usage_updates"]
+        else:
+            return {}
+    elif isinstance(payload, dict) and "usage_updates" in payload:
+        payload = payload.get("usage_updates")
+
+    if not isinstance(payload, dict):
+        return {}
+
+    updates: dict[str, dict[str, Any]] = {}
+    for raw_card_id, usage_update in payload.items():
+        card_id = str(raw_card_id or "").strip()
+        if not card_id or not isinstance(usage_update, dict):
+            continue
+        updates[card_id] = usage_update
+    return updates
 
 
 def _parse_best_ideas(path: Path) -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -225,22 +388,79 @@ def _load_banks_cards(path: Path, best_ideas_path: Path) -> list[dict]:
     return selected_cards
 
 
-def load_memory_cards(path: Path, best_ideas_path: Path) -> list[dict]:
-    payload = _load_json(path)
+def _apply_usage_updates_to_cards(
+    cards: list[dict[str, Any]],
+    *,
+    usage_updates: dict[str, dict[str, Any]],
+    memory: AmemGamMemory,
+) -> list[dict[str, Any]]:
+    if not usage_updates:
+        return cards
 
+    cards_by_id: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        card_id = str(card.get("id") or "").strip()
+        if card_id:
+            cards_by_id[card_id] = dict(card)
+
+    missing_card_ids: list[str] = []
+    for card_id, usage_update in usage_updates.items():
+        current_card = cards_by_id.get(card_id)
+        if current_card is None:
+            existing = memory.get_card(card_id)
+            if not isinstance(existing, dict):
+                missing_card_ids.append(card_id)
+                continue
+            current_card = dict(existing)
+
+        current_card["usage"] = _merge_usage_payloads(
+            current_card.get("usage"),
+            usage_update,
+        )
+        cards_by_id[card_id] = current_card
+
+    if missing_card_ids:
+        print(
+            "Warning: skipped usage updates for "
+            f"{len(missing_card_ids)} card(s) because they were not found in memory store."
+        )
+
+    return list(cards_by_id.values())
+
+
+def load_memory_cards(
+    path: Path,
+    best_ideas_path: Path,
+    *,
+    usage_updates_path: Path | None = None,
+    memory: AmemGamMemory | None = None,
+) -> list[dict]:
+    payload = _load_json(path)
+    usage_updates = _load_usage_updates(usage_updates_path)
+
+    cards: list[dict]
     if isinstance(payload, dict) and "active_bank" in payload:
-        return _load_banks_cards(path, best_ideas_path)
-    if (
+        cards = _load_banks_cards(path, best_ideas_path)
+    elif (
         isinstance(payload, list)
         and payload
         and isinstance(payload[0], dict)
         and "active_bank" in payload[0]
     ):
-        return _load_banks_cards(path, best_ideas_path)
+        cards = _load_banks_cards(path, best_ideas_path)
+    else:
+        raise ValueError(
+            "Invalid banks JSON format. Expected payload with 'active_bank' and 'inactive_bank'."
+        )
 
-    raise ValueError(
-        "Invalid banks JSON format. Expected payload with 'active_bank' and 'inactive_bank'."
-    )
+    if usage_updates and memory is not None:
+        cards = _apply_usage_updates_to_cards(
+            cards,
+            usage_updates=usage_updates,
+            memory=memory,
+        )
+
+    return cards
 
 
 def _write_memory_write_stats(
@@ -300,6 +520,7 @@ def main() -> dict[str, Any] | None:
     print(f"Config file: {SETTINGS_PATH}")
     print(f"Memory evolution enabled: {SHOULD_EVOLVE}")
     print(f"LLM field fill enabled: {FILL_MISSING_FIELDS_WITH_LLM}")
+    print(f"Memory usage tracking enabled: {ENABLE_USAGE_TRACKING}")
     print(
         "Card update/dedup enabled: "
         f"{to_bool(CARD_UPDATE_DEDUP_CONFIG.get('enabled'), default=False)}"
@@ -307,7 +528,12 @@ def main() -> dict[str, Any] | None:
 
     if not BANKS_PATH.exists():
         raise FileNotFoundError(f"Banks file not found: {BANKS_PATH}")
-    memory_cards = load_memory_cards(BANKS_PATH, best_ideas_path=BEST_IDEAS_PATH)
+    memory_cards = load_memory_cards(
+        BANKS_PATH,
+        best_ideas_path=BEST_IDEAS_PATH,
+        usage_updates_path=USAGE_UPDATES_PATH,
+        memory=memory,
+    )
     print(
         f"Loaded {len(memory_cards)} cards from banks: {BANKS_PATH} "
         f"(filtered by: {BEST_IDEAS_PATH})"
