@@ -18,6 +18,34 @@ if str(_AGENT_ROOT) not in sys.path:
 from openai_inference import OpenAIInferenceService
 
 import config
+try:
+    from .card_update_dedup import (
+        QUERY_DESCRIPTION,
+        QUERY_DESCRIPTION_EXPLANATION_SUMMARY,
+        QUERY_DESCRIPTION_TASK_DESCRIPTION_SUMMARY,
+        QUERY_EXPLANATION_SUMMARY,
+        CardUpdateDedupConfig,
+        build_dedup_queries,
+        compute_weighted_candidates,
+        get_explanation_summary,
+        get_full_explanations,
+        merge_updated_card,
+        parse_llm_card_decision,
+    )
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from shared_memory.card_update_dedup import (
+        QUERY_DESCRIPTION,
+        QUERY_DESCRIPTION_EXPLANATION_SUMMARY,
+        QUERY_DESCRIPTION_TASK_DESCRIPTION_SUMMARY,
+        QUERY_EXPLANATION_SUMMARY,
+        CardUpdateDedupConfig,
+        build_dedup_queries,
+        compute_weighted_candidates,
+        get_explanation_summary,
+        get_full_explanations,
+        merge_updated_card,
+        parse_llm_card_decision,
+    )
 
 load_dotenv()
 
@@ -33,6 +61,8 @@ _VECTOR_GAM_TOOLS = {
     "vector_description",
     "vector_task_description",
     "vector_explanation_summary",
+    "vector_description_explanation_summary",
+    "vector_description_task_description_summary",
 }
 _ALLOWED_GAM_TOOLS = {
     "keyword",
@@ -46,6 +76,8 @@ _DEFAULT_GAM_TOP_K_BY_TOOL = {
     "vector_description": 5,
     "vector_task_description": 5,
     "vector_explanation_summary": 5,
+    "vector_description_explanation_summary": 5,
+    "vector_description_task_description_summary": 5,
     "page_index": 5,
 }
 
@@ -290,6 +322,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
         allowed_gam_tools: list[str] | None = None,
         gam_top_k_by_tool: dict[str, int] | None = None,
         gam_pipeline_mode: str = "default",
+        card_update_dedup_config: dict[str, Any] | None = None,
     ):
         self.checkpoint_dir = Path(checkpoint_path)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -311,6 +344,10 @@ class AmemGamMemory(GigaEvoMemoryBase):
         self.allowed_gam_tools = self._normalize_allowed_gam_tools(allowed_gam_tools)
         self.gam_top_k_by_tool = self._normalize_gam_top_k_by_tool(gam_top_k_by_tool)
         self.gam_pipeline_mode = self._normalize_gam_pipeline_mode(gam_pipeline_mode)
+        self.card_update_dedup_config = CardUpdateDedupConfig.from_mapping(
+            card_update_dedup_config or {}
+        )
+        self._warned_missing_card_update_llm = False
         self._iters_after_rebuild = 0
 
         self.api: _ConceptApiClient | None = None
@@ -331,11 +368,19 @@ class AmemGamMemory(GigaEvoMemoryBase):
         self.card_id_by_entity: dict[str, str] = {}
         self.entity_version_by_entity: dict[str, str] = {}
         self.memory_ids: set[str] = set()
+        self.card_write_stats: dict[str, int] = {
+            "processed": 0,
+            "added": 0,
+            "rejected": 0,
+            "updated": 0,
+            "updated_target_cards": 0,
+        }
         self._load_index()
 
         self.llm_service, self.generator = self._init_llm_service_and_generator()
         self.memory_system = self._init_storage()
         self.research_agent: Any | None = None
+        self._dedup_retrievers: dict[str, Any] | None = None
 
         if self.memory_system is not None and self.generator is not None and self.export_file.exists():
             try:
@@ -409,7 +454,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
         self._AMemGeneratorCls = _AMemGenerator
 
     def _init_llm_service_and_generator(self) -> tuple[Any | None, Any | None]:
-        if self._AMemGeneratorCls is None:
+        if self._AMemGeneratorCls is None and not self.card_update_dedup_config.enabled:
             return None, None
         api_key = config.OPENAI_API_KEY
         if not api_key and config.LLM_BASE_URL:
@@ -435,6 +480,8 @@ class AmemGamMemory(GigaEvoMemoryBase):
                 max_tokens=0,
                 reasoning=config.OPENROUTER_REASONING,
             )
+            if self._AMemGeneratorCls is None:
+                return llm_service, None
             generator = self._AMemGeneratorCls({"llm_service": llm_service})
             return llm_service, generator
         except Exception as exc:
@@ -920,7 +967,296 @@ class AmemGamMemory(GigaEvoMemoryBase):
             card_overrides=self.memory_cards,
         )
 
-    def save_card(self, card: dict[str, Any]) -> str:
+    @staticmethod
+    def _truncate_text(value: Any, max_chars: int = 1200) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3].rstrip() + "..."
+
+    def _build_dedup_retrievers(self) -> dict[str, Any]:
+        try:
+            from .amem_gam_retriever import (
+                build_gam_store,
+                build_retrievers,
+                load_amem_records,
+            )
+        except Exception as exc:
+            try:
+                from shared_memory.amem_gam_retriever import (
+                    build_gam_store,
+                    build_retrievers,
+                    load_amem_records,
+                )
+            except Exception:
+                print(f"[Memory] Dedup retriever import failed: {exc}")
+                return {}
+
+        self.gam_store_dir.mkdir(parents=True, exist_ok=True)
+        if self.export_file.exists():
+            try:
+                records = load_amem_records(self.export_file)
+            except Exception:
+                records = list(self.memory_cards.values())
+        else:
+            records = list(self.memory_cards.values())
+        if not records:
+            return {}
+
+        try:
+            _, page_store, _ = build_gam_store(records, self.gam_store_dir)
+            retrievers = build_retrievers(
+                page_store,
+                self.gam_store_dir / "indexes",
+                self.checkpoint_dir / "chroma",
+                enable_bm25=False,
+            )
+        except Exception as exc:
+            print(f"[Memory] Dedup retriever build failed: {exc}")
+            return {}
+
+        return {
+            name: retriever
+            for name, retriever in retrievers.items()
+            if name in self.allowed_gam_tools
+        }
+
+    def _resolve_vector_retriever(self, tool_name: str) -> Any | None:
+        if self.research_agent is None and self.memory_system is not None and self.generator is not None:
+            try:
+                self.rebuild()
+            except Exception as exc:
+                print(f"[Memory] Retriever rebuild skipped before dedup: {exc}")
+
+        retrievers: dict[str, Any] = {}
+        if self.research_agent is not None:
+            raw_retrievers = getattr(self.research_agent, "retrievers", None)
+            if isinstance(raw_retrievers, dict):
+                retrievers = raw_retrievers
+        else:
+            if self._dedup_retrievers is None:
+                self._dedup_retrievers = self._build_dedup_retrievers()
+            retrievers = self._dedup_retrievers or {}
+        if not retrievers:
+            return None
+
+        retriever = retrievers.get(tool_name)
+        if retriever is None and tool_name != "vector":
+            retriever = retrievers.get("vector")
+        return retriever
+
+    def _score_retrieved_candidates(
+        self,
+        card: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        cfg = self.card_update_dedup_config
+        if not cfg.enabled or not self.memory_cards:
+            return []
+
+        query_by_key = build_dedup_queries(card)
+        tool_by_key = {
+            QUERY_DESCRIPTION: "vector_description",
+            QUERY_EXPLANATION_SUMMARY: "vector_explanation_summary",
+            QUERY_DESCRIPTION_EXPLANATION_SUMMARY: "vector_description_explanation_summary",
+            QUERY_DESCRIPTION_TASK_DESCRIPTION_SUMMARY: "vector_description_task_description_summary",
+        }
+
+        scores_by_query: dict[str, dict[str, float]] = {}
+
+        for query_key, query_text in query_by_key.items():
+            text = str(query_text or "").strip()
+            if not text:
+                continue
+
+            retriever = self._resolve_vector_retriever(tool_by_key[query_key])
+            if retriever is None:
+                continue
+
+            try:
+                hits_by_query = retriever.search([text], top_k=cfg.top_k_per_query)
+            except Exception as exc:
+                print(
+                    f"[Memory] Dedup retrieval failed for query '{query_key}': {exc}"
+                )
+                continue
+
+            hits = []
+            if isinstance(hits_by_query, list) and hits_by_query:
+                first = hits_by_query[0]
+                if isinstance(first, list):
+                    hits = first
+                else:
+                    hits = hits_by_query
+
+            query_scores: dict[str, float] = {}
+            for hit in hits:
+                card_id = str(getattr(hit, "page_id", "") or "").strip()
+                if not card_id or card_id not in self.memory_cards:
+                    continue
+                meta = getattr(hit, "meta", {}) or {}
+                try:
+                    score = float(meta.get("score", 0.0))
+                except (TypeError, ValueError):
+                    score = 0.0
+                if score <= 0:
+                    continue
+                previous_score = query_scores.get(card_id, 0.0)
+                if score > previous_score:
+                    query_scores[card_id] = score
+            scores_by_query[query_key] = query_scores
+
+        return compute_weighted_candidates(
+            scores_by_query,
+            weights=cfg.weights,
+            final_top_n=cfg.final_top_n,
+            min_final_score=cfg.min_final_score,
+        )
+
+    def _dedup_candidates_for_llm(
+        self, scored_candidates: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for item in scored_candidates:
+            card_id = str(item.get("card_id") or "").strip()
+            if not card_id:
+                continue
+            card = self.memory_cards.get(card_id)
+            if not isinstance(card, dict):
+                continue
+
+            explanations = get_full_explanations(card)
+            payload.append(
+                {
+                    "card_id": card_id,
+                    "final_score": float(item.get("final_score", 0.0)),
+                    "scores": item.get("scores", {}),
+                    "task_description_summary": self._truncate_text(
+                        card.get("task_description_summary"), 600
+                    ),
+                    "description": self._truncate_text(card.get("description"), 1200),
+                    "explanation_summary": self._truncate_text(
+                        get_explanation_summary(card), 600
+                    ),
+                    "explanation_full": [
+                        self._truncate_text(explanation, 1200)
+                        for explanation in explanations
+                    ],
+                }
+            )
+        return payload
+
+    def _decide_card_action(
+        self,
+        incoming_card: dict[str, Any],
+        candidates_for_llm: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        default_decision = {
+            "action": "add",
+            "reason": "",
+            "duplicate_of": "",
+            "updates": [],
+        }
+        if self.llm_service is None or not candidates_for_llm:
+            return default_decision
+
+        candidate_ids = {
+            str(item.get("card_id") or "").strip()
+            for item in candidates_for_llm
+            if str(item.get("card_id") or "").strip()
+        }
+        if not candidate_ids:
+            return default_decision
+
+        incoming_payload = {
+            "id": str(incoming_card.get("id") or "").strip(),
+            "task_description_summary": self._truncate_text(
+                incoming_card.get("task_description_summary"), 600
+            ),
+            "task_description": self._truncate_text(
+                incoming_card.get("task_description"), 1200
+            ),
+            "description": self._truncate_text(incoming_card.get("description"), 1200),
+            "explanation_summary": self._truncate_text(
+                get_explanation_summary(incoming_card), 600
+            ),
+            "explanation_full": [
+                self._truncate_text(explanation, 1200)
+                for explanation in get_full_explanations(incoming_card)
+            ],
+        }
+        prompt = (
+            "You are a memory-card deduplication and update policy agent.\n"
+            "For NEW_CARD choose exactly one action:\n"
+            "- add: NEW_CARD is genuinely new and should be saved as a new memory card.\n"
+            "- discard: one existing card already represents the same idea.\n"
+            "- update: idea exists, but NEW_CARD adds a new task/use-case and/or new explanation details.\n\n"
+            "Return only JSON with this schema:\n"
+            "{\n"
+            '  "action": "add|discard|update",\n'
+            '  "reason": "short reason",\n'
+            '  "duplicate_of": "card_id or empty",\n'
+            '  "updates": [\n'
+            "    {\n"
+            '      "card_id": "candidate card id",\n'
+            '      "update_task_description": true|false,\n'
+            '      "task_description_append": "text to append or empty",\n'
+            '      "task_description_summary": "updated summary or empty",\n'
+            '      "update_explanation": true|false,\n'
+            '      "explanation_append": "full explanation text to append or empty",\n'
+            '      "explanation_summary": "updated summary or empty"\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Rules:\n"
+            "- If action=discard, set duplicate_of to one candidate card_id.\n"
+            "- If action=update, include one or more update objects with candidate card_ids.\n"
+            "- Use update when the same idea appears in a new task context or provides additional explanation.\n"
+            "- Never invent card ids outside the candidate list.\n\n"
+            f"NEW_CARD:\n{json.dumps(incoming_payload, ensure_ascii=True, indent=2)}\n\n"
+            f"CANDIDATE_CARDS:\n{json.dumps(candidates_for_llm, ensure_ascii=True, indent=2)}"
+        )
+
+        decision = default_decision
+        for _ in range(self.card_update_dedup_config.llm_max_retries):
+            try:
+                response_text, _, _, _ = self.llm_service.generate(prompt)
+            except Exception as exc:
+                print(f"[Memory] Dedup LLM decision call failed: {exc}")
+                continue
+            parsed = parse_llm_card_decision(
+                response_text,
+                candidate_ids=candidate_ids,
+            )
+            if isinstance(parsed, dict):
+                decision = parsed
+                break
+        return decision
+
+    def _apply_update_actions(
+        self,
+        incoming_card: dict[str, Any],
+        updates: list[dict[str, Any]],
+    ) -> list[str]:
+        updated_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for update in updates:
+            if not isinstance(update, dict):
+                continue
+            card_id = str(update.get("card_id") or "").strip()
+            if not card_id or card_id in seen_ids:
+                continue
+            existing_card = self.memory_cards.get(card_id)
+            if not isinstance(existing_card, dict):
+                continue
+
+            merged_card = merge_updated_card(existing_card, incoming_card, update)
+            merged_card["id"] = card_id
+            self._save_card_core(merged_card)
+            seen_ids.add(card_id)
+            updated_ids.append(card_id)
+        return updated_ids
+
+    def _save_card_core(self, card: dict[str, Any]) -> str:
         card = normalize_memory_card(card)
         card_id = self._ensure_card_id(card)
 
@@ -964,12 +1300,57 @@ class AmemGamMemory(GigaEvoMemoryBase):
 
         self._upsert_local_note_agentic(self.memory_cards[card_id])
         self._persist_index()
+        self._dedup_retrievers = None
 
         self._iters_after_rebuild += 1
         if self._iters_after_rebuild >= self.rebuild_interval:
             self.rebuild()
 
         return card_id
+
+    def save_card(self, card: dict[str, Any]) -> str:
+        normalized_card = normalize_memory_card(card)
+        self.card_write_stats["processed"] += 1
+        if (
+            self.card_update_dedup_config.enabled
+            and self.memory_cards
+            and self.llm_service is None
+            and not self._warned_missing_card_update_llm
+        ):
+            print(
+                "[Memory] card_update_dedup is enabled but LLM service is unavailable. "
+                "Falling back to regular save_card behavior."
+            )
+            self._warned_missing_card_update_llm = True
+
+        if (
+            self.card_update_dedup_config.enabled
+            and self.memory_cards
+            and self.llm_service is not None
+        ):
+            scored_candidates = self._score_retrieved_candidates(normalized_card)
+            candidates_for_llm = self._dedup_candidates_for_llm(scored_candidates)
+            decision = self._decide_card_action(normalized_card, candidates_for_llm)
+            action = str(decision.get("action") or "add").strip().lower()
+
+            if action == "discard":
+                duplicate_id = str(decision.get("duplicate_of") or "").strip()
+                if duplicate_id in self.memory_cards:
+                    self.card_write_stats["rejected"] += 1
+                    return duplicate_id
+            elif action == "update":
+                updates = decision.get("updates")
+                updated_ids = self._apply_update_actions(
+                    normalized_card,
+                    updates if isinstance(updates, list) else [],
+                )
+                if updated_ids:
+                    self.card_write_stats["updated"] += 1
+                    self.card_write_stats["updated_target_cards"] += len(updated_ids)
+                    return updated_ids[0]
+
+        self.card_write_stats["added"] += 1
+        return self._save_card_core(normalized_card)
 
     def save(self, data: str, category: str = "general") -> str:
         return self.save_card(
@@ -1152,12 +1533,16 @@ class AmemGamMemory(GigaEvoMemoryBase):
     def get_card(self, card_id: str) -> dict[str, Any] | None:
         return self.memory_cards.get(card_id)
 
+    def get_card_write_stats(self) -> dict[str, int]:
+        return dict(self.card_write_stats)
+
     def rebuild(self) -> None:
         self._persist_index()
         if self.memory_system is None or self.generator is None:
             return
         self._dump_memory()
         self.research_agent = self._load_or_create_retriever()
+        self._dedup_retrievers = None
         self._iters_after_rebuild = 0
 
     def delete(self, memory_id: str) -> bool:
