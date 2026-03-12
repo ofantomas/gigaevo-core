@@ -23,6 +23,7 @@ class MemoryCard(BaseModel):
     category: str = "general"
     description: str
     task_description: str = ""
+    task_description_summary: str = ""
     strategy: Strategy | None = None
     last_generation: int = 0
     programs: list[str] = Field(default_factory=list)

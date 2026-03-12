@@ -51,6 +51,7 @@ def make_card_text(record: Dict[str, Any]) -> str:
     # Support both new and legacy A-mem export schemas.
     description = record.get("description") or record.get("content") or ""
     task_description = record.get("task_description") or record.get("context") or ""
+    task_description_summary = record.get("task_description_summary") or ""
     category = record.get("category") or ""
     strategy = record.get("strategy") or ""
     keywords = ", ".join(record.get("keywords", []) or [])
@@ -65,6 +66,7 @@ def make_card_text(record: Dict[str, Any]) -> str:
     usage = record.get("usage", {}) or {}
     parts = [
         f"description: {description}",
+        f"task_description_summary: {task_description_summary}",
         f"task_description: {task_description}",
         f"category: {category}",
         f"strategy: {strategy}",

@@ -79,6 +79,9 @@ def normalize_memory_card(
         "category": str(raw.get("category") or "general"),
         "description": str(raw.get("description") or raw.get("content") or ""),
         "task_description": str(raw.get("task_description") or raw.get("context") or ""),
+        "task_description_summary": str(
+            raw.get("task_description_summary") or raw.get("context_summary") or ""
+        ),
         "strategy": str(raw.get("strategy") or ""),
         "last_generation": _to_int(raw.get("last_generation"), default=0),
         "programs": _to_list(raw.get("programs")),
@@ -552,6 +555,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
             "id": str(card.get("id") or ""),
             "category": str(card.get("category") or "general"),
             "task_description": str(card.get("task_description") or ""),
+            "task_description_summary": str(card.get("task_description_summary") or ""),
             "description": str(card.get("description") or ""),
             "explanation": explanation_text,
             "strategy": strategy,
@@ -566,6 +570,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
         card_id = str(card.get("id") or "")
         description = str(card.get("description") or "").strip()
         task_description = str(card.get("task_description") or "").strip()
+        task_description_summary = str(card.get("task_description_summary") or "").strip()
 
         explanation = card.get("explanation")
         explanation_summary = ""
@@ -574,7 +579,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
         else:
             explanation_summary = str(explanation or "").strip()
 
-        name_seed = description or task_description or "memory card"
+        name_seed = description or task_description_summary or task_description or "memory card"
         name = f"{card_id}: {name_seed}" if card_id else name_seed
         name = name[:255]
 
@@ -588,6 +593,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
 
         when_to_use_parts = self._dedupe_keep_order(
             [
+                task_description_summary,
                 task_description,
                 description,
                 explanation_summary,
@@ -605,6 +611,8 @@ class AmemGamMemory(GigaEvoMemoryBase):
                 "category": concept_content.get("category") or "general",
                 "description": concept_content.get("description") or "",
                 "task_description": concept_content.get("task_description") or "",
+                "task_description_summary": concept_content.get("task_description_summary")
+                or "",
                 "strategy": concept_content.get("strategy") or "",
                 "keywords": concept_content.get("keywords") or [],
                 "evolution_statistics": concept_content.get("evolution_statistics") or {},
@@ -640,7 +648,11 @@ class AmemGamMemory(GigaEvoMemoryBase):
             raise RuntimeError("MemoryNote class is unavailable")
         card_id = str(card.get("id") or "")
         description = str(card.get("description") or "")
-        context = str(card.get("task_description") or "General")
+        context = str(
+            card.get("task_description")
+            or card.get("task_description_summary")
+            or "General"
+        )
         category = str(card.get("category") or "general")
         strategy = str(card.get("strategy") or "")
         keywords = list(card.get("keywords") or [])
@@ -708,7 +720,11 @@ class AmemGamMemory(GigaEvoMemoryBase):
         kwargs = {
             "category": str(card.get("category") or "general"),
             "keywords": list(card.get("keywords") or []),
-            "context": str(card.get("task_description") or "General"),
+            "context": str(
+                card.get("task_description")
+                or card.get("task_description_summary")
+                or "General"
+            ),
             "strategy": str(card.get("strategy") or ""),
             "links": list(card.get("links") or []),
             "tags": [],
@@ -961,6 +977,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
                 "category": category,
                 "description": data,
                 "task_description": "",
+                "task_description_summary": "",
                 "strategy": "",
                 "last_generation": 0,
                 "programs": [],
@@ -999,6 +1016,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
                     [
                         f"id: {card.get('id', '')}",
                         f"category: {card.get('category', '')}",
+                        f"task_description_summary: {card.get('task_description_summary', '')}",
                         f"task_description: {card.get('task_description', '')}",
                         f"description: {card.get('description', '')}",
                         f"keywords: {card.get('keywords', [])}",
@@ -1097,6 +1115,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
             haystack = " ".join(
                 [
                     str(card.get("description") or ""),
+                    str(card.get("task_description_summary") or ""),
                     str(card.get("task_description") or ""),
                     " ".join([str(x) for x in (card.get("keywords") or [])]),
                     str(card.get("category") or ""),

@@ -225,7 +225,9 @@ class ChromaRetriever(AbsRetriever):
 
         description = str(card.get("description") or card.get("content") or parsed.get("description") or "")
         task_description = str(
-            card.get("task_description")
+            card.get("task_description_summary")
+            or parsed.get("task_description_summary")
+            or card.get("task_description")
             or card.get("context")
             or parsed.get("task_description")
             or ""

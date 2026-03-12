@@ -34,7 +34,7 @@ Cards are represented locally in a normalized schema (examples in `new_mem_examp
 
 ### Local card fields
 
-- `id`, `category`, `description`, `task_description`, `strategy`
+- `id`, `category`, `description`, `task_description`, `task_description_summary`, `strategy`
 - `keywords`, `links`, `works_with`
 - `explanation.summary`
 - optional maps: `evolution_statistics`, `usage`
