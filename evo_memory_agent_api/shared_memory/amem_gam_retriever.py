@@ -140,6 +140,8 @@ def build_retrievers(
                 "description",
                 "task_description",
                 "explanation_summary",
+                "description_explanation_summary",
+                "description_task_description_summary",
             ],
             "source_label": "vector",
         },

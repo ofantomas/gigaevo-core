@@ -17,6 +17,8 @@ class ChromaRetriever(AbsRetriever):
         "description": "memories_description",
         "task_description": "memories_task_description",
         "explanation_summary": "memories_explanation_summary",
+        "description_explanation_summary": "memories_description_explanation_summary",
+        "description_task_description_summary": "memories_description_task_description_summary",
     }
 
     def __init__(self, config: Dict[str, Any]):
@@ -238,10 +240,24 @@ class ChromaRetriever(AbsRetriever):
             or parsed.get("explanation_summary")
             or ""
         )
+        description_explanation_summary = self._merge_labeled_text(
+            description,
+            explanation_summary,
+            first_label="IDEA_DESCRIPTION",
+            second_label="EXPLANATION_SUMMARY",
+        )
+        description_task_description_summary = self._merge_labeled_text(
+            description,
+            task_description,
+            first_label="IDEA_DESCRIPTION",
+            second_label="TASK_DESCRIPTION_SUMMARY",
+        )
         return {
             "description": description,
             "task_description": task_description,
             "explanation_summary": explanation_summary,
+            "description_explanation_summary": description_explanation_summary,
+            "description_task_description_summary": description_task_description_summary,
         }
 
     @staticmethod
@@ -258,6 +274,25 @@ class ChromaRetriever(AbsRetriever):
             return f"IDEA_DESCRIPTION: {description_text}"
         if explanation_text:
             return f"EXPLANATION_SUMMARY: {explanation_text}"
+        return ""
+
+    @staticmethod
+    def _merge_labeled_text(
+        first: str,
+        second: str,
+        *,
+        first_label: str,
+        second_label: str,
+    ) -> str:
+        first_text = " ".join(str(first or "").split())
+        second_text = " ".join(str(second or "").split())
+
+        if first_text and second_text:
+            return f"{first_label}: {first_text}\n{second_label}: {second_text}"
+        if first_text:
+            return f"{first_label}: {first_text}"
+        if second_text:
+            return f"{second_label}: {second_text}"
         return ""
 
     @staticmethod
