@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timezone
 import json
 import os
 from typing import Any
@@ -110,6 +111,12 @@ if isinstance(RAW_GAM_TOP_K_BY_TOOL, dict):
     }
 else:
     GAM_TOP_K_BY_TOOL = {}
+
+RAW_CARD_UPDATE_DEDUP = deep_get(SETTINGS, "card_update_dedup", default={})
+if isinstance(RAW_CARD_UPDATE_DEDUP, dict):
+    CARD_UPDATE_DEDUP_CONFIG = RAW_CARD_UPDATE_DEDUP
+else:
+    CARD_UPDATE_DEDUP_CONFIG = {}
 
 
 def _load_json(path: Path) -> Any:
@@ -236,7 +243,36 @@ def load_memory_cards(path: Path, best_ideas_path: Path) -> list[dict]:
     )
 
 
-def main() -> None:
+def _write_memory_write_stats(
+    *,
+    stats_path: Path,
+    input_cards_count: int,
+    write_stats: dict[str, int],
+) -> dict[str, Any]:
+    snapshot = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "input_cards_count": int(input_cards_count),
+        "stats": write_stats,
+    }
+
+    existing: list[dict[str, Any]] = []
+    if stats_path.exists():
+        try:
+            raw = _load_json(stats_path)
+            if isinstance(raw, list):
+                existing = [item for item in raw if isinstance(item, dict)]
+            elif isinstance(raw, dict):
+                existing = [raw]
+        except Exception:
+            existing = []
+
+    existing.append(snapshot)
+    with stats_path.open("w", encoding="utf-8") as f:
+        json.dump(existing, f, ensure_ascii=True, indent=2)
+    return snapshot
+
+
+def main() -> dict[str, Any] | None:
     memory = AmemGamMemory(
         checkpoint_path=str(MEMORY_DIR),
         base_url=MEMORY_API_URL,
@@ -255,6 +291,7 @@ def main() -> None:
         allowed_gam_tools=ALLOWED_GAM_TOOLS,
         gam_top_k_by_tool=GAM_TOP_K_BY_TOOL,
         gam_pipeline_mode=GAM_PIPELINE_MODE,
+        card_update_dedup_config=CARD_UPDATE_DEDUP_CONFIG,
     )
 
     print("\n==============================")
@@ -263,6 +300,10 @@ def main() -> None:
     print(f"Config file: {SETTINGS_PATH}")
     print(f"Memory evolution enabled: {SHOULD_EVOLVE}")
     print(f"LLM field fill enabled: {FILL_MISSING_FIELDS_WITH_LLM}")
+    print(
+        "Card update/dedup enabled: "
+        f"{to_bool(CARD_UPDATE_DEDUP_CONFIG.get('enabled'), default=False)}"
+    )
 
     if not BANKS_PATH.exists():
         raise FileNotFoundError(f"Banks file not found: {BANKS_PATH}")
@@ -283,10 +324,29 @@ def main() -> None:
             print(f"[{idx:03d}] saved {memory_id}: {stored.get('description', '')[:110]}")
     except RuntimeError as exc:
         print(f"\nWrite failed: {exc}\n")
-        return
+        return None
 
     memory.rebuild()
     print(f"\nLocal API index saved in: {MEMORY_DIR / 'api_index.json'}")
+
+    write_stats = memory.get_card_write_stats()
+    print(
+        "Write stats: "
+        f"processed={write_stats.get('processed', 0)}, "
+        f"added={write_stats.get('added', 0)}, "
+        f"updated={write_stats.get('updated', 0)}, "
+        f"rejected={write_stats.get('rejected', 0)}, "
+        f"updated_target_cards={write_stats.get('updated_target_cards', 0)}"
+    )
+
+    stats_path = BANKS_PATH.parent / "memory_write_stats.json"
+    snapshot = _write_memory_write_stats(
+        stats_path=stats_path,
+        input_cards_count=len(memory_cards),
+        write_stats=write_stats,
+    )
+    print(f"Memory write stats saved to: {stats_path}")
+    return snapshot
 
 
 if __name__ == "__main__":

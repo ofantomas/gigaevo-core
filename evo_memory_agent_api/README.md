@@ -14,10 +14,14 @@ It wraps local A-MEM + GAM retrieval with API-backed persistence:
 ### High-level flow
 
 1. `save_card(...)` normalizes a memory card and persists it as a concept entity in the API (when `MEMORY_USE_API=true`).
-2. The saved card is also upserted into local A-MEM runtime for retrieval.
-3. `search(...)` first performs incremental sync from API, then tries GAM agentic retrieval.
-4. If GAM is unavailable/fails, it falls back to API full-text search.
-5. If API mode is disabled, it falls back to local lexical search over cached cards.
+2. Optional card update/dedup pipeline (config: `card_update_dedup` in `config/memory.yaml`) can run before write:
+   - multi-query vector retrieval (`description`, `explanation summary`, and two combined fields)
+   - weighted rerank
+   - LLM decision: `add` / `discard` / `update`
+3. The saved card is also upserted into local A-MEM runtime for retrieval.
+4. `search(...)` first performs incremental sync from API, then tries GAM agentic retrieval.
+5. If GAM is unavailable/fails, it falls back to API full-text search.
+6. If API mode is disabled, it falls back to local lexical search over cached cards.
 
 ### Data ownership model
 

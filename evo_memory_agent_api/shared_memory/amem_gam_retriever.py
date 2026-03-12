@@ -157,6 +157,14 @@ def build_retrievers(
             "active_collections": ["explanation_summary"],
             "source_label": "vector_explanation_summary",
         },
+        "vector_description_explanation_summary": {
+            "active_collections": ["description_explanation_summary"],
+            "source_label": "vector_description_explanation_summary",
+        },
+        "vector_description_task_description_summary": {
+            "active_collections": ["description_task_description_summary"],
+            "source_label": "vector_description_task_description_summary",
+        },
     }
     for tool_name, extra in vector_tool_configs.items():
         try:
