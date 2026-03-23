@@ -1113,7 +1113,8 @@ class AmemGamMemory(GigaEvoMemoryBase):
         )
 
     def _dedup_candidates_for_llm(
-        self, scored_candidates: list[dict[str, Any]]
+        self,
+        scored_candidates: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         payload: list[dict[str, Any]] = []
         for item in scored_candidates:
@@ -1172,9 +1173,6 @@ class AmemGamMemory(GigaEvoMemoryBase):
             "task_description_summary": self._truncate_text(
                 incoming_card.get("task_description_summary"), 600
             ),
-            "task_description": self._truncate_text(
-                incoming_card.get("task_description"), 1200
-            ),
             "description": self._truncate_text(incoming_card.get("description"), 1200),
             "explanation_summary": self._truncate_text(
                 get_explanation_summary(incoming_card), 600
@@ -1208,9 +1206,14 @@ class AmemGamMemory(GigaEvoMemoryBase):
             "  ]\n"
             "}\n\n"
             "Rules:\n"
+            "- Use add when NEW_CARD is a genuinely new idea and should become its own card.\n"
+            "- Use update when one candidate already contains the same core idea, but NEW_CARD contributes a new use-case, sharper wording, extra mechanism detail, or additional explanation that should be merged into that existing card.\n"
+            "- Use discard when one candidate already expresses the same idea with no meaningful new information.\n"
+            "- Do not choose update or discard just because cards share the same broad task, benchmark, or domain.\n"
+            "- Compare the actual idea/mechanism/intervention described in DESCRIPTION and EXPLANATION.\n"
+            "- If the core idea in NEW_CARD is meaningfully different from every candidate, action must be add.\n"
             "- If action=discard, set duplicate_of to one candidate card_id.\n"
             "- If action=update, include one or more update objects with candidate card_ids.\n"
-            "- Use update when the same idea appears in a new task context or provides additional explanation.\n"
             "- Never invent card ids outside the candidate list.\n\n"
             f"NEW_CARD:\n{json.dumps(incoming_payload, ensure_ascii=True, indent=2)}\n\n"
             f"CANDIDATE_CARDS:\n{json.dumps(candidates_for_llm, ensure_ascii=True, indent=2)}"

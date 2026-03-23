@@ -203,9 +203,7 @@ def _merge_labeled_text(
 def build_dedup_queries(card: dict[str, Any]) -> dict[str, str]:
     description = _normalize_text(card.get("description"))
     explanation_summary = _normalize_text(get_explanation_summary(card))
-    task_summary = _normalize_text(
-        card.get("task_description_summary") or card.get("task_description")
-    )
+    task_summary = _normalize_text(card.get("task_description_summary"))
     return {
         QUERY_DESCRIPTION: description,
         QUERY_EXPLANATION_SUMMARY: explanation_summary,
