@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import json
 import math
+from math import ceil
 import os
 import statistics
 from typing import Any
@@ -70,6 +71,15 @@ BEST_IDEAS_PATH = resolve_local_path(
         or str(_BANKS_DIR / "best_ideas.json")
     ),
     default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/best_ideas.json",
+)
+PROGRAMS_PATH = resolve_local_path(
+    THIS_DIR,
+    (
+        os.getenv("MEMORY_PROGRAMS_PATH")
+        or deep_get(SETTINGS, "paths.programs_path")
+        or str(BANKS_PATH.parent / "programs.json")
+    ),
+    default_relative="../gigaevo/llm/ideas_tracker/logs/2026-02-19_19-51-02/programs.json",
 )
 ENABLE_USAGE_TRACKING = to_bool(
     deep_get(SETTINGS, "ideas_tracker.usage_tracking.enabled"),
@@ -140,6 +150,17 @@ if isinstance(RAW_CARD_UPDATE_DEDUP, dict):
     CARD_UPDATE_DEDUP_CONFIG = RAW_CARD_UPDATE_DEDUP
 else:
     CARD_UPDATE_DEDUP_CONFIG = {}
+BEST_PROGRAMS_PERCENT = max(
+    0.0,
+    float(
+        deep_get(
+            SETTINGS,
+            "ideas_tracker.memory_write_pipeline.best_programs_percent",
+            default=5.0,
+        )
+        or 0.0
+    ),
+)
 
 
 def _load_json(path: Path) -> Any:
@@ -179,6 +200,41 @@ def _median_or_none(values: list[float]) -> float | None:
     if not values:
         return None
     return float(statistics.median(values))
+
+
+def _top_percent_count(total: int, percent: float) -> int:
+    if total <= 0 or percent <= 0:
+        return 0
+    return max(1, ceil(total * (percent / 100.0)))
+
+
+def _card_type(card: dict[str, Any]) -> str:
+    if str(card.get("category") or "").strip().lower() == "program":
+        return "programs"
+    if str(card.get("program_id") or "").strip():
+        return "programs"
+    return "ideas"
+
+
+def _zero_write_stats() -> dict[str, int]:
+    return {
+        "processed": 0,
+        "added": 0,
+        "updated": 0,
+        "rejected": 0,
+        "updated_target_cards": 0,
+    }
+
+
+def _diff_write_stats(
+    before: dict[str, int],
+    after: dict[str, int],
+) -> dict[str, int]:
+    keys = set(before) | set(after)
+    return {
+        key: max(0, int(after.get(key, 0)) - int(before.get(key, 0)))
+        for key in keys
+    }
 
 
 def _extract_usage_task_deltas(usage: Any) -> dict[str, list[float]]:
@@ -328,6 +384,15 @@ def _parse_best_ideas(path: Path) -> tuple[list[str], dict[str, dict[str, Any]]]
     return idea_ids, best_by_id
 
 
+def _parse_programs(path: Path) -> list[dict[str, Any]]:
+    payload = _load_json(path)
+    snapshot = _latest_snapshot(payload, "programs")
+    programs = snapshot.get("programs")
+    if not isinstance(programs, list):
+        raise ValueError(f"Invalid programs format in {path}: expected list under 'programs'")
+    return [program for program in programs if isinstance(program, dict)]
+
+
 def _merge_best_idea_metrics(card: dict[str, Any], best_entry: dict[str, Any]) -> dict[str, Any]:
     merged = dict(card)
     if not merged.get("description"):
@@ -388,6 +453,110 @@ def _load_banks_cards(path: Path, best_ideas_path: Path) -> list[dict]:
     return selected_cards
 
 
+def _load_latest_bank_cards(path: Path) -> list[dict[str, Any]]:
+    payload = _load_json(path)
+    snapshot = _latest_snapshot(payload, "active_bank")
+    active_bank = snapshot.get("active_bank")
+    inactive_bank = snapshot.get("inactive_bank")
+    if not isinstance(active_bank, list) or not isinstance(inactive_bank, list):
+        raise ValueError(
+            f"Invalid banks format in {path}: expected 'active_bank' and 'inactive_bank' lists"
+        )
+    return [card for card in [*active_bank, *inactive_bank] if isinstance(card, dict)]
+
+
+def _build_program_cards(
+    *,
+    programs_path: Path | None,
+    banks_path: Path,
+    best_programs_percent: float,
+) -> list[dict[str, Any]]:
+    if programs_path is None or not programs_path.exists() or best_programs_percent <= 0:
+        return []
+
+    programs = _parse_programs(programs_path)
+    if not programs:
+        return []
+
+    eligible_programs: list[dict[str, Any]] = []
+    for program in programs:
+        program_id = str(program.get("id") or program.get("program_id") or "").strip()
+        fitness = _to_float(program.get("fitness"))
+        if not program_id or fitness is None:
+            continue
+        enriched = dict(program)
+        enriched["program_id"] = program_id
+        enriched["fitness"] = fitness
+        eligible_programs.append(enriched)
+
+    if not eligible_programs:
+        return []
+
+    eligible_programs.sort(
+        key=lambda program: (float(program.get("fitness", 0.0)), str(program["program_id"])),
+        reverse=True,
+    )
+    selected_count = _top_percent_count(len(eligible_programs), best_programs_percent)
+    selected_programs = eligible_programs[:selected_count]
+
+    connected_ideas_by_program: dict[str, list[dict[str, str]]] = {}
+    for idea_card in _load_latest_bank_cards(banks_path):
+        idea_id = str(idea_card.get("id") or "").strip()
+        idea_description = str(idea_card.get("description") or "").strip()
+        if not idea_id:
+            continue
+        programs_for_idea = idea_card.get("programs")
+        if not isinstance(programs_for_idea, list):
+            continue
+        linked_idea = {
+            "idea_id": idea_id,
+            "description": idea_description,
+        }
+        for raw_program_id in programs_for_idea:
+            linked_program_id = str(raw_program_id or "").strip()
+            if not linked_program_id:
+                continue
+            connected_ideas_by_program.setdefault(linked_program_id, []).append(linked_idea)
+
+    cards: list[dict[str, Any]] = []
+    total_programs = len(eligible_programs)
+    for rank, program in enumerate(selected_programs, start=1):
+        program_id = str(program["program_id"])
+        task_description = str(program.get("task_description") or "").strip()
+        task_description_summary = str(program.get("task_description_summary") or "").strip()
+        connected_ideas = connected_ideas_by_program.get(program_id, [])
+        connected_descriptions = [
+            str(item.get("description") or "").strip()
+            for item in connected_ideas
+            if isinstance(item, dict)
+        ]
+        connected_descriptions = [text for text in connected_descriptions if text]
+        connected_summary = "; ".join(connected_descriptions[:5])
+        description_seed = task_description_summary or task_description or "task summary unavailable"
+        description = (
+            f"Top evolved program for {description_seed} "
+            f"(fitness={float(program['fitness']):.6g}, rank={rank}/{total_programs})."
+        )
+        if connected_summary:
+            description += f" Connected ideas: {connected_summary}"
+
+        cards.append(
+            {
+                "id": f"program-{program_id}",
+                "category": "program",
+                "program_id": program_id,
+                "task_description": task_description,
+                "task_description_summary": task_description_summary,
+                "description": description,
+                "fitness": float(program["fitness"]),
+                "code": str(program.get("code") or ""),
+                "connected_ideas": connected_ideas,
+            }
+        )
+
+    return cards
+
+
 def _apply_usage_updates_to_cards(
     cards: list[dict[str, Any]],
     *,
@@ -432,6 +601,8 @@ def load_memory_cards(
     path: Path,
     best_ideas_path: Path,
     *,
+    programs_path: Path | None = None,
+    best_programs_percent: float = 0.0,
     usage_updates_path: Path | None = None,
     memory: AmemGamMemory | None = None,
 ) -> list[dict]:
@@ -460,19 +631,27 @@ def load_memory_cards(
             memory=memory,
         )
 
-    return cards
+    return cards + _build_program_cards(
+        programs_path=programs_path,
+        banks_path=path,
+        best_programs_percent=best_programs_percent,
+    )
 
 
 def _write_memory_write_stats(
     *,
     stats_path: Path,
     input_cards_count: int,
+    input_card_type_counts: dict[str, int],
     write_stats: dict[str, int],
+    write_stats_by_card_type: dict[str, dict[str, int]],
 ) -> dict[str, Any]:
     snapshot = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "input_cards_count": int(input_cards_count),
+        "input_card_type_counts": input_card_type_counts,
         "stats": write_stats,
+        "stats_by_card_type": write_stats_by_card_type,
     }
 
     existing: list[dict[str, Any]] = []
@@ -531,6 +710,8 @@ def main() -> dict[str, Any] | None:
     memory_cards = load_memory_cards(
         BANKS_PATH,
         best_ideas_path=BEST_IDEAS_PATH,
+        programs_path=PROGRAMS_PATH,
+        best_programs_percent=BEST_PROGRAMS_PERCENT,
         usage_updates_path=USAGE_UPDATES_PATH,
         memory=memory,
     )
@@ -544,8 +725,20 @@ def main() -> dict[str, Any] | None:
         print(f"Writing in local-only mode (checkpoint={MEMORY_DIR})\n")
 
     try:
+        write_stats_by_card_type = {
+            "ideas": _zero_write_stats(),
+            "programs": _zero_write_stats(),
+        }
         for idx, card in enumerate(memory_cards, start=1):
+            card_type = _card_type(card)
+            before_stats = memory.get_card_write_stats()
             memory_id = memory.save_card(card)
+            after_stats = memory.get_card_write_stats()
+            stat_diff = _diff_write_stats(before_stats, after_stats)
+            for stat_name, stat_value in stat_diff.items():
+                write_stats_by_card_type[card_type][stat_name] = (
+                    int(write_stats_by_card_type[card_type].get(stat_name, 0)) + int(stat_value)
+                )
             stored = memory.get_card(memory_id) or {}
             print(f"[{idx:03d}] saved {memory_id}: {stored.get('description', '')[:110]}")
     except RuntimeError as exc:
@@ -556,12 +749,24 @@ def main() -> dict[str, Any] | None:
     print(f"\nLocal API index saved in: {MEMORY_DIR / 'api_index.json'}")
 
     write_stats = memory.get_card_write_stats()
+    input_card_type_counts = {
+        "ideas": sum(1 for card in memory_cards if _card_type(card) == "ideas"),
+        "programs": sum(1 for card in memory_cards if _card_type(card) == "programs"),
+    }
     print(
         "Write stats: "
         f"processed={write_stats.get('processed', 0)}, "
+        f"ideas_processed={write_stats_by_card_type['ideas'].get('processed', 0)}, "
+        f"programs_processed={write_stats_by_card_type['programs'].get('processed', 0)}, "
         f"added={write_stats.get('added', 0)}, "
+        f"ideas_added={write_stats_by_card_type['ideas'].get('added', 0)}, "
+        f"programs_added={write_stats_by_card_type['programs'].get('added', 0)}, "
         f"updated={write_stats.get('updated', 0)}, "
+        f"ideas_updated={write_stats_by_card_type['ideas'].get('updated', 0)}, "
+        f"programs_updated={write_stats_by_card_type['programs'].get('updated', 0)}, "
         f"rejected={write_stats.get('rejected', 0)}, "
+        f"ideas_rejected={write_stats_by_card_type['ideas'].get('rejected', 0)}, "
+        f"programs_rejected={write_stats_by_card_type['programs'].get('rejected', 0)}, "
         f"updated_target_cards={write_stats.get('updated_target_cards', 0)}"
     )
 
@@ -569,7 +774,9 @@ def main() -> dict[str, Any] | None:
     snapshot = _write_memory_write_stats(
         stats_path=stats_path,
         input_cards_count=len(memory_cards),
+        input_card_type_counts=input_card_type_counts,
         write_stats=write_stats,
+        write_stats_by_card_type=write_stats_by_card_type,
     )
     print(f"Memory write stats saved to: {stats_path}")
     return snapshot

@@ -97,18 +97,42 @@ def _to_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _to_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def normalize_memory_card(
     card: dict[str, Any] | None = None,
     fallback_id: str | None = None,
 ) -> dict[str, Any]:
     raw = dict(card or {})
+    category = str(raw.get("category") or "general")
+    program_id = str(raw.get("program_id") or "")
+    if category == "program" or program_id:
+        return {
+            "id": str(raw.get("id") or fallback_id or ""),
+            "category": "program",
+            "program_id": program_id,
+            "task_description": str(raw.get("task_description") or raw.get("context") or ""),
+            "task_description_summary": str(
+                raw.get("task_description_summary") or raw.get("context_summary") or ""
+            ),
+            "description": str(raw.get("description") or raw.get("content") or ""),
+            "fitness": _to_float(raw.get("fitness"), default=None),
+            "code": str(raw.get("code") or ""),
+            "connected_ideas": _to_list(raw.get("connected_ideas")),
+        }
+
     explanation = raw.get("explanation")
     if not isinstance(explanation, dict):
         explanation = {}
 
     return {
         "id": str(raw.get("id") or fallback_id or ""),
-        "category": str(raw.get("category") or "general"),
+        "category": category,
         "description": str(raw.get("description") or raw.get("content") or ""),
         "task_description": str(raw.get("task_description") or raw.get("context") or ""),
         "task_description_summary": str(
@@ -152,6 +176,8 @@ def _memory_to_card(
     card["category"] = str(card.get("category") or _safe_get(memory_note, "category", None) or "general")
     card["description"] = str(card.get("description") or _safe_get(memory_note, "content", ""))
     card["task_description"] = str(card.get("task_description") or _safe_get(memory_note, "context", ""))
+    if str(card.get("category") or "").strip().lower() == "program":
+        return card
     card["strategy"] = str(card.get("strategy") or _safe_get(memory_note, "strategy", ""))
     card["keywords"] = _to_list(_safe_get(memory_note, "keywords", []) or [])
 
@@ -580,6 +606,19 @@ class AmemGamMemory(GigaEvoMemoryBase):
         return card_id
 
     def _card_to_concept_content(self, card: dict[str, Any]) -> dict[str, Any]:
+        if self._is_program_card(card):
+            return {
+                "id": str(card.get("id") or ""),
+                "category": "program",
+                "program_id": str(card.get("program_id") or ""),
+                "task_description": str(card.get("task_description") or ""),
+                "task_description_summary": str(card.get("task_description_summary") or ""),
+                "description": str(card.get("description") or ""),
+                "fitness": _to_float(card.get("fitness"), default=None),
+                "code": str(card.get("code") or ""),
+                "connected_ideas": _to_list(card.get("connected_ideas")),
+            }
+
         explanation = card.get("explanation")
         if isinstance(explanation, dict):
             explanation_text = str(explanation.get("summary") or "")
@@ -601,9 +640,13 @@ class AmemGamMemory(GigaEvoMemoryBase):
         return {
             "id": str(card.get("id") or ""),
             "category": str(card.get("category") or "general"),
+            "program_id": str(card.get("program_id") or ""),
+            "fitness": _to_float(card.get("fitness"), default=None),
             "task_description": str(card.get("task_description") or ""),
             "task_description_summary": str(card.get("task_description_summary") or ""),
             "description": str(card.get("description") or ""),
+            "code": str(card.get("code") or ""),
+            "connected_ideas": _to_list(card.get("connected_ideas")),
             "explanation": explanation_text,
             "strategy": strategy,
             "keywords": self._dedupe_keep_order(list(card.get("keywords") or [])),
@@ -656,10 +699,14 @@ class AmemGamMemory(GigaEvoMemoryBase):
             {
                 "id": concept_content.get("id") or fallback_id,
                 "category": concept_content.get("category") or "general",
+                "program_id": concept_content.get("program_id") or "",
+                "fitness": concept_content.get("fitness"),
                 "description": concept_content.get("description") or "",
                 "task_description": concept_content.get("task_description") or "",
                 "task_description_summary": concept_content.get("task_description_summary")
                 or "",
+                "code": concept_content.get("code") or "",
+                "connected_ideas": concept_content.get("connected_ideas") or [],
                 "strategy": concept_content.get("strategy") or "",
                 "keywords": concept_content.get("keywords") or [],
                 "evolution_statistics": concept_content.get("evolution_statistics") or {},
@@ -1000,6 +1047,7 @@ class AmemGamMemory(GigaEvoMemoryBase):
                 records = list(self.memory_cards.values())
         else:
             records = list(self.memory_cards.values())
+        records = [record for record in records if not self._is_program_card(record)]
         if not records:
             return {}
 
@@ -1022,21 +1070,9 @@ class AmemGamMemory(GigaEvoMemoryBase):
         }
 
     def _resolve_vector_retriever(self, tool_name: str) -> Any | None:
-        if self.research_agent is None and self.memory_system is not None and self.generator is not None:
-            try:
-                self.rebuild()
-            except Exception as exc:
-                print(f"[Memory] Retriever rebuild skipped before dedup: {exc}")
-
-        retrievers: dict[str, Any] = {}
-        if self.research_agent is not None:
-            raw_retrievers = getattr(self.research_agent, "retrievers", None)
-            if isinstance(raw_retrievers, dict):
-                retrievers = raw_retrievers
-        else:
-            if self._dedup_retrievers is None:
-                self._dedup_retrievers = self._build_dedup_retrievers()
-            retrievers = self._dedup_retrievers or {}
+        if self._dedup_retrievers is None:
+            self._dedup_retrievers = self._build_dedup_retrievers()
+        retrievers = self._dedup_retrievers or {}
         if not retrievers:
             return None
 
@@ -1092,6 +1128,8 @@ class AmemGamMemory(GigaEvoMemoryBase):
             for hit in hits:
                 card_id = str(getattr(hit, "page_id", "") or "").strip()
                 if not card_id or card_id not in self.memory_cards:
+                    continue
+                if self._is_program_card(self.memory_cards[card_id]):
                     continue
                 meta = getattr(hit, "meta", {}) or {}
                 try:
@@ -1311,12 +1349,22 @@ class AmemGamMemory(GigaEvoMemoryBase):
 
         return card_id
 
+    @staticmethod
+    def _is_program_card(card: dict[str, Any]) -> bool:
+        if str(card.get("category") or "").strip().lower() == "program":
+            return True
+        return bool(str(card.get("program_id") or "").strip())
+
     def save_card(self, card: dict[str, Any]) -> str:
         normalized_card = normalize_memory_card(card)
         self.card_write_stats["processed"] += 1
         incoming_card_id = str(normalized_card.get("id") or "").strip()
         if incoming_card_id and incoming_card_id in self.memory_cards:
             self.card_write_stats["updated"] += 1
+            return self._save_card_core(normalized_card)
+
+        if self._is_program_card(normalized_card):
+            self.card_write_stats["added"] += 1
             return self._save_card_core(normalized_card)
 
         if (

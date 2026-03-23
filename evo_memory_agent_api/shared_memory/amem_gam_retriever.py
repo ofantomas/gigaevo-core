@@ -56,6 +56,9 @@ def make_card_text(record: Dict[str, Any]) -> str:
     strategy = record.get("strategy") or ""
     keywords = ", ".join(record.get("keywords", []) or [])
     links = record.get("links", []) or []
+    program_id = record.get("program_id") or ""
+    fitness = record.get("fitness", "")
+    connected_ideas = record.get("connected_ideas", []) or []
     last_generation = record.get("last_generation", "")
     programs = record.get("programs", []) or []
     aliases = record.get("aliases", []) or []
@@ -69,6 +72,8 @@ def make_card_text(record: Dict[str, Any]) -> str:
         f"task_description_summary: {task_description_summary}",
         f"task_description: {task_description}",
         f"category: {category}",
+        f"program_id: {program_id}",
+        f"fitness: {fitness}",
         f"strategy: {strategy}",
         f"last_generation: {last_generation}",
         f"programs: {programs}",
@@ -78,6 +83,7 @@ def make_card_text(record: Dict[str, Any]) -> str:
         f"explanation_summary: {explanation_summary}",
         f"works_with: {works_with}",
         f"links: {links}",
+        f"connected_ideas: {connected_ideas}",
         f"usage: {usage}",
     ]
     return "\n".join(parts)
