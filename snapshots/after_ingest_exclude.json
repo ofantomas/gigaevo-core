@@ -1,0 +1,521 @@
+{
+  "timestamp": "2026-03-24T21:34:02.328440+00:00",
+  "git_sha": "dfb6aadb30e2c9e91df9bef00f75c5b60c088198",
+  "benchmarks": [
+    {
+      "raw": "BENCHMARK: get_all N=500 (fakeredis): 88.0ms",
+      "name": "get_all",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 88.0,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: get_all N=2000 (fakeredis): 348.5ms",
+      "name": "get_all",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 348.5,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: get_all N=5000 (fakeredis): 1295.6ms",
+      "name": "get_all",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 1295.6,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: collector.compute N=500 (fakeredis): 26.6ms",
+      "name": "collector.compute",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 26.6,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: collector.compute N=2000 (fakeredis): 387.9ms",
+      "name": "collector.compute",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 387.9,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: collector.compute N=5000 (fakeredis): 348.7ms",
+      "name": "collector.compute",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 348.7,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: collector x20 (refresh sim) N=500 (fakeredis): 39ms",
+      "reps": 20,
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 39.0,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: collector x20 (refresh sim) N=2000 (fakeredis): 450ms",
+      "reps": 20,
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 450.0,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: collector x20 (refresh sim) N=5000 (fakeredis): 477ms",
+      "reps": 20,
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 477.0,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: dag_throughput concurrency=1 (fakeredis): 144.5 prog/s (0.346s for 50 programs)",
+      "conc": 1,
+      "backend": "fakeredis",
+      "value": 144.5,
+      "unit": "prog/s"
+    },
+    {
+      "raw": ".BENCHMARK: dag_throughput concurrency=4 (fakeredis): 158.9 prog/s (0.315s for 50 programs)",
+      "conc": 4,
+      "backend": "fakeredis",
+      "value": 158.9,
+      "unit": "prog/s"
+    },
+    {
+      "raw": ".BENCHMARK: dag_throughput concurrency=8 (fakeredis): 160.4 prog/s (0.312s for 50 programs)",
+      "conc": 8,
+      "backend": "fakeredis",
+      "value": 160.4,
+      "unit": "prog/s"
+    },
+    {
+      "raw": ".BENCHMARK: dag_throughput concurrency=16 (fakeredis): 156.5 prog/s (0.320s for 50 programs)",
+      "conc": 16,
+      "backend": "fakeredis",
+      "value": 156.5,
+      "unit": "prog/s"
+    },
+    {
+      "raw": ".BENCHMARK: scheduling_overhead (fakeredis): 0.0ms/program (single=11.2ms, total=270ms for 30 programs)",
+      "backend": "fakeredis",
+      "value": 0.0,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: generation_wall_time N=500 (fakeredis): 0.530s (949.7 prog/s)",
+      "name": "generation_wall_time",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 0.53,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: generation_wall_time N=2000 (fakeredis): 1.922s (1042.3 prog/s)",
+      "name": "generation_wall_time",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 1.922,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: generation_wall_time N=5000 (fakeredis): 7.870s (635.7 prog/s)",
+      "name": "generation_wall_time",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 7.87,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: generation_with_collector N=500 (fakeredis): 0.726s",
+      "name": "generation_with_collector",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 0.726,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: generation_with_collector N=2000 (fakeredis): 2.312s",
+      "name": "generation_with_collector",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 2.312,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: generation_with_collector N=5000 (fakeredis): 9.181s",
+      "name": "generation_with_collector",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 9.181,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: 3_generations N=500 (fakeredis): 0.766s total, 0.255s/gen",
+      "name": "3_generations",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 0.766,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: 3_generations N=2000 (fakeredis): 2.053s total, 0.684s/gen",
+      "name": "3_generations",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 2.053,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: 3_generations N=5000 (fakeredis): 7.924s total, 2.641s/gen",
+      "name": "3_generations",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 7.924,
+      "unit": "s"
+    },
+    {
+      "raw": ".BENCHMARK: frontier_recompute N=500: 4.22ms",
+      "name": "frontier_recompute",
+      "n": 500,
+      "value": 4.22,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: frontier_recompute N=2000: 14.21ms",
+      "name": "frontier_recompute",
+      "n": 2000,
+      "value": 14.21,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: frontier_recompute N=5000: 38.56ms",
+      "name": "frontier_recompute",
+      "n": 5000,
+      "value": 38.56,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: incremental_process bg=500: 0.064ms/program (6.4ms for 100)",
+      "name": "incremental_process",
+      "n": 500,
+      "value": 0.064,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: incremental_process bg=2000: 0.063ms/program (6.3ms for 100)",
+      "name": "incremental_process",
+      "n": 2000,
+      "value": 0.063,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: refresh_changed_fitness N=500 (10% changed): 7.4ms",
+      "name": "refresh_changed_fitness",
+      "n": 500,
+      "value": 7.4,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: serialization code=100B: to_dict=0.003ms from_dict=0.005ms",
+      "size": 100,
+      "to_dict": 0.003,
+      "from_dict": 0.005
+    },
+    {
+      "raw": ".BENCHMARK: serialization code=500B: to_dict=0.003ms from_dict=0.005ms",
+      "size": 500,
+      "to_dict": 0.003,
+      "from_dict": 0.005
+    },
+    {
+      "raw": ".BENCHMARK: serialization code=1000B: to_dict=0.003ms from_dict=0.005ms",
+      "size": 1000,
+      "to_dict": 0.003,
+      "from_dict": 0.005
+    },
+    {
+      "raw": ".BENCHMARK: serialization code=3000B: to_dict=0.003ms from_dict=0.005ms",
+      "size": 3000,
+      "to_dict": 0.003,
+      "from_dict": 0.005
+    },
+    {
+      "raw": ".BENCHMARK: serialization code=5000B: to_dict=0.003ms from_dict=0.006ms",
+      "size": 5000,
+      "to_dict": 0.003,
+      "from_dict": 0.006
+    },
+    {
+      "raw": ".BENCHMARK: storage_roundtrip code=100B (fakeredis): add=0.246ms get=0.037ms",
+      "size": 100,
+      "backend": "fakeredis",
+      "add": 0.246,
+      "get": 0.037
+    },
+    {
+      "raw": ".BENCHMARK: storage_roundtrip code=500B (fakeredis): add=0.248ms get=0.038ms",
+      "size": 500,
+      "backend": "fakeredis",
+      "add": 0.248,
+      "get": 0.038
+    },
+    {
+      "raw": ".BENCHMARK: storage_roundtrip code=1000B (fakeredis): add=0.245ms get=0.038ms",
+      "size": 1000,
+      "backend": "fakeredis",
+      "add": 0.245,
+      "get": 0.038
+    },
+    {
+      "raw": ".BENCHMARK: storage_roundtrip code=3000B (fakeredis): add=0.249ms get=0.039ms",
+      "size": 3000,
+      "backend": "fakeredis",
+      "add": 0.249,
+      "get": 0.039
+    },
+    {
+      "raw": ".BENCHMARK: storage_roundtrip code=5000B (fakeredis): add=0.251ms get=0.042ms",
+      "size": 5000,
+      "backend": "fakeredis",
+      "add": 0.251,
+      "get": 0.042
+    },
+    {
+      "raw": ".BENCHMARK: complexity_analysis code=100B: 0.161ms/call (32.2ms for 200 calls)",
+      "size": 100,
+      "value": 0.161,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: complexity_analysis code=500B: 0.303ms/call (60.7ms for 200 calls)",
+      "size": 500,
+      "value": 0.303,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: complexity_analysis code=1000B: 0.623ms/call (124.6ms for 200 calls)",
+      "size": 1000,
+      "value": 0.623,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: complexity_analysis code=3000B: 1.709ms/call (341.7ms for 200 calls)",
+      "size": 3000,
+      "value": 1.709,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: complexity_analysis code=5000B: 2.730ms/call (546.0ms for 200 calls)",
+      "size": 5000,
+      "value": 2.73,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: mget_exclude N=100 (fakeredis): full=13.0ms excl_stages=5.6ms (2.32x speedup)",
+      "unparsed": true
+    },
+    {
+      "raw": ".BENCHMARK: mget_exclude N=500 (fakeredis): full=101.4ms excl_stages=33.3ms (3.05x speedup)",
+      "unparsed": true
+    },
+    {
+      "raw": ".BENCHMARK: mget 100 programs code=2KB (fakeredis): 1.22ms/call",
+      "n": 100,
+      "backend": "fakeredis",
+      "value": 1.22,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: sequential_transitions N=100 (fakeredis): 54.5ms (3672 transitions/s)",
+      "name": "sequential_transitions",
+      "n": 100,
+      "backend": "fakeredis",
+      "value": 54.5,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: concurrent_transitions concurrency=4 (fakeredis): 56.7ms (3525 transitions/s)",
+      "name": "concurrent_transitions",
+      "n": 4,
+      "backend": "fakeredis",
+      "value": 3525.0,
+      "unit": "transitions/s"
+    },
+    {
+      "raw": ".BENCHMARK: concurrent_transitions concurrency=8 (fakeredis): 56.5ms (3541 transitions/s)",
+      "name": "concurrent_transitions",
+      "n": 8,
+      "backend": "fakeredis",
+      "value": 3541.0,
+      "unit": "transitions/s"
+    },
+    {
+      "raw": ".BENCHMARK: concurrent_transitions concurrency=16 (fakeredis): 56.1ms (3566 transitions/s)",
+      "name": "concurrent_transitions",
+      "n": 16,
+      "backend": "fakeredis",
+      "value": 3566.0,
+      "unit": "transitions/s"
+    },
+    {
+      "raw": ".BENCHMARK: count_by_status x3 (fakeredis): 0.084ms/round (17ms for 200 rounds)",
+      "name": "count_by_status",
+      "backend": "fakeredis",
+      "value": 0.084,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: batch_by_ids_heavy N=100 (fakeredis): 19.6ms",
+      "name": "batch_by_ids_heavy",
+      "n": 100,
+      "backend": "fakeredis",
+      "value": 19.6,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: batch_by_ids_heavy N=500 (fakeredis): 148.4ms",
+      "name": "batch_by_ids_heavy",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 148.4,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: batch_by_ids_heavy N=2000 (fakeredis): 1229.7ms",
+      "name": "batch_by_ids_heavy",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 1229.7,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: batch_state_heavy N=100 (fakeredis): 20.5ms",
+      "name": "batch_state_heavy",
+      "n": 100,
+      "backend": "fakeredis",
+      "value": 20.5,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: batch_state_heavy N=500 (fakeredis): 150.9ms",
+      "name": "batch_state_heavy",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 150.9,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: batch_state_heavy N=2000 (fakeredis): 1246.4ms",
+      "name": "batch_state_heavy",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 1246.4,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: select_elites(3) N=500 (fakeredis): 0.48ms/call (24ms for 50 calls)",
+      "name": "select_elites(3)",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 0.48,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: select_elites(3) N=2000 (fakeredis): 0.54ms/call (27ms for 50 calls)",
+      "name": "select_elites(3)",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 0.54,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: select_elites(3) N=5000 (fakeredis): 0.65ms/call (32ms for 50 calls)",
+      "name": "select_elites(3)",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 0.65,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: island.add N=500 (fakeredis): 0.14ms/add (6.8ms for 50 adds)",
+      "name": "island.add",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 0.14,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: island.add N=2000 (fakeredis): 0.14ms/add (6.8ms for 50 adds)",
+      "name": "island.add",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 0.14,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: island.add N=5000 (fakeredis): 0.14ms/add (6.9ms for 50 adds)",
+      "name": "island.add",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 0.14,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: reindex_archive N=500 (fakeredis): 2.6ms",
+      "name": "reindex_archive",
+      "n": 500,
+      "backend": "fakeredis",
+      "value": 2.6,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: reindex_archive N=2000 (fakeredis): 2.6ms",
+      "name": "reindex_archive",
+      "n": 2000,
+      "backend": "fakeredis",
+      "value": 2.6,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: reindex_archive N=5000 (fakeredis): 2.6ms",
+      "name": "reindex_archive",
+      "n": 5000,
+      "backend": "fakeredis",
+      "value": 2.6,
+      "unit": "ms"
+    },
+    {
+      "raw": ".BENCHMARK: pool_serial_throughput: 38.1 calls/s (0.525s for 20 calls)",
+      "value": 38.1,
+      "unit": "calls/s"
+    },
+    {
+      "raw": ".BENCHMARK: pool_contention workers=2 callers=4: 9.8 calls/s (0.407s)",
+      "workers": 2,
+      "callers": 4,
+      "value": 9.8,
+      "unit": "calls/s"
+    },
+    {
+      "raw": ".BENCHMARK: pool_contention workers=4 callers=8: 14.6 calls/s (0.549s)",
+      "workers": 4,
+      "callers": 8,
+      "value": 14.6,
+      "unit": "calls/s"
+    },
+    {
+      "raw": ".BENCHMARK: pool_contention workers=4 callers=16: 29.7 calls/s (0.538s)",
+      "workers": 4,
+      "callers": 16,
+      "value": 29.7,
+      "unit": "calls/s"
+    }
+  ]
+}
