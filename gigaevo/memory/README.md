@@ -134,19 +134,19 @@ make up
 2. Write cards to API:
 
 ```bash
-python evo_memory_agent_api/memory_write_example.py
+python gigaevo.memory/memory_write_example.py
 ```
 
 3. Search:
 
 ```bash
-python evo_memory_agent_api/memory_read_example.py
+python gigaevo.memory/memory_read_example.py
 ```
 
 4. Save + search in one script:
 
 ```bash
-python evo_memory_agent_api/shared_memory/memory_usage_example.py
+python gigaevo.memory/shared_memory/memory_usage_example.py
 ```
 
 ## Local-only Mode
