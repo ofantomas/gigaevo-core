@@ -15,7 +15,7 @@ class MemoryCardExplanation(BaseModel):
 
 
 class MemoryCard(BaseModel):
-    """Canonical memory card used by evo_memory_agent_api."""
+    """Canonical memory card used by gigaevo.memory."""
 
     model_config = ConfigDict(extra="forbid")
 
