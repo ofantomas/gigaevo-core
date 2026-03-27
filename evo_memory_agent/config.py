@@ -1,9 +1,0 @@
-import os
-
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
-OPENROUTER_SERVICE = "openrouter_openai"
-OPENROUTER_MODEL_NAME = "openai/gpt-4.1-mini"
-
-AMEM_EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-GAM_DENSE_RETRIEVER_MODEL_NAME = "BAAI/bge-m3"
