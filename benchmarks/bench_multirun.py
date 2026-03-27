@@ -1,25 +1,37 @@
 #!/usr/bin/env python3
 """Multi-run contention simulation for SteadyStateEvolutionEngine.
 
-Simulates N concurrent evolution runs sharing a pool of M mutation servers.
-Each LLM call's latency depends on the GLOBAL concurrent load on its assigned
-server, using the real contention curve measured from Qwen3-235B.
+Simulates N concurrent evolution runs sharing:
+- M mutation servers (LLM calls for producing mutants)
+- K chain servers (DAG evaluation / CallValidatorFunction)
 
-Measured contention curve (10.226.72.211:8777, Qwen3-235B-A22B-Thinking):
+Two-phase program lifecycle (calibrated from production HoVer logs):
+1. LLM Mutation (~90-110s): produces mutant, subject to mutation server contention
+2. DAG Evaluation (~25 min): validates program on chain servers, subject to chain contention
+
+Both phases use scipy lognorm distributions fitted to real experiment data.
+Calibration data loaded from benchmarks/calibration_data.json.
+
+Measured mutation server contention (Qwen3-235B):
   per_server_concurrent=1: 5.6s mean  (baseline)
   per_server_concurrent=2: 4.3s mean  (batching sweet spot)
   per_server_concurrent=4: 5.2s mean  (still OK)
   per_server_concurrent=8: 10.6s mean (saturated)
 
+Chain server contention (from DAG eval concurrency analysis):
+  conc 1-4:  0.3-0.65x base  (less GPU contention)
+  conc 8-15: 1.0-1.05x base  (normal operating point)
+  conc >15:  1.05-1.15x base (moderate increase)
+
 Usage:
-    # 4 runs, 4 servers, static max_in_flight=8
-    PYTHONPATH=. python benchmarks/bench_multirun.py --runs 4 --servers 4
+    # 4 runs, 3 mutation servers, 4 chain servers (production config)
+    PYTHONPATH=. python benchmarks/bench_multirun.py
 
-    # Compare static vs adaptive
-    PYTHONPATH=. python benchmarks/bench_multirun.py --runs 4 --servers 4 --compare
+    # Sweep max_in_flight
+    PYTHONPATH=. python benchmarks/bench_multirun.py --sweep
 
-    # Sweep max_in_flight with 4 runs competing
-    PYTHONPATH=. python benchmarks/bench_multirun.py --runs 4 --servers 4 --sweep
+    # Custom config
+    PYTHONPATH=. python benchmarks/bench_multirun.py --runs 4 --mut-servers 3 --chain-servers 4
 """
 
 from __future__ import annotations
@@ -27,10 +39,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass, field
+import json
+from pathlib import Path
 import random
 import statistics
 import time
 from unittest.mock import AsyncMock, MagicMock
+
+import scipy.stats
 
 from gigaevo.evolution.engine.config import SteadyStateEngineConfig
 from gigaevo.evolution.engine.steady_state import SteadyStateEvolutionEngine
@@ -38,90 +54,121 @@ from gigaevo.programs.program import Program
 from gigaevo.programs.program_state import ProgramState
 
 # ---------------------------------------------------------------------------
-# Real contention model (piecewise linear interpolation)
+# Timing
 # ---------------------------------------------------------------------------
-# Measured data points: (per_server_concurrent, mean_latency_seconds)
-_CONTENTION_CURVE = [
+TIMESCALE = 0.001  # 1ms bench time = 1s real time
+
+# ---------------------------------------------------------------------------
+# Load calibration data
+# ---------------------------------------------------------------------------
+_CALIBRATION_PATH = Path(__file__).parent / "calibration_data.json"
+
+
+def _load_calibration() -> dict:
+    if _CALIBRATION_PATH.exists():
+        with open(_CALIBRATION_PATH) as f:
+            return json.load(f)
+    return {}
+
+
+_CAL = _load_calibration()
+
+# ---------------------------------------------------------------------------
+# Fitted distributions
+# ---------------------------------------------------------------------------
+_LLM_FIT = _CAL.get("llm_mutation", {}).get("fit", {})
+_LLM_DIST = scipy.stats.lognorm(
+    s=_LLM_FIT.get("s", 0.2784),
+    loc=_LLM_FIT.get("loc", 0),
+    scale=_LLM_FIT.get("scale", 102.87),
+)
+
+_DAG_FIT = _CAL.get("dag_eval", {}).get("fit", {})
+_DAG_DIST = scipy.stats.lognorm(
+    s=_DAG_FIT.get("s", 0.4616),
+    loc=_DAG_FIT.get("loc", 0),
+    scale=_DAG_FIT.get("scale", 1375.6),
+)
+
+# ---------------------------------------------------------------------------
+# Contention models
+# ---------------------------------------------------------------------------
+_MUTATION_CONTENTION = [
     (1, 5.6),
-    (2, 4.3),  # batching sweet spot
+    (2, 4.3),
     (4, 5.2),
     (8, 10.6),
-    (12, 18.0),  # extrapolated
-    (16, 28.0),  # extrapolated
+    (12, 18.0),
+    (16, 28.0),
 ]
 
-# Base latency distribution params (exponential)
-_LLM_MEAN_S = 25.0
-_LLM_MIN_S = 5.0
-_LLM_MAX_S = 90.0
+# Chain contention: multiplier on DAG eval base duration
+# Distribution already models typical operating point (conc ~12)
+_CHAIN_CONTENTION = [
+    (1, 0.3),
+    (4, 0.65),
+    (8, 1.0),
+    (15, 1.05),
+    (22, 1.15),
+]
 
-# Simulation timescale: 1ms bench time = 1s real time
-TIMESCALE = 0.001
+
+def _piecewise_interp(curve: list[tuple[float, float]], x: float) -> float:
+    if x <= curve[0][0]:
+        return curve[0][1]
+    for i in range(len(curve) - 1):
+        x0, y0 = curve[i]
+        x1, y1 = curve[i + 1]
+        if x0 <= x <= x1:
+            frac = (x - x0) / (x1 - x0)
+            return y0 + frac * (y1 - y0)
+    x0, y0 = curve[-2]
+    x1, y1 = curve[-1]
+    slope = (y1 - y0) / (x1 - x0)
+    return y1 + slope * (x - x1)
 
 
-def _contention_multiplier(per_server_n: float) -> float:
-    """Piecewise linear interpolation of the real contention curve.
-
-    Returns a multiplier relative to N=1 baseline (5.6s).
-    """
-    if per_server_n <= 0:
-        per_server_n = 1
-
-    baseline = _CONTENTION_CURVE[0][1]  # 5.6s at N=1
-
-    # Find the bounding points
-    for i in range(len(_CONTENTION_CURVE) - 1):
-        n_lo, lat_lo = _CONTENTION_CURVE[i]
-        n_hi, lat_hi = _CONTENTION_CURVE[i + 1]
-        if n_lo <= per_server_n <= n_hi:
-            frac = (per_server_n - n_lo) / (n_hi - n_lo)
-            lat = lat_lo + frac * (lat_hi - lat_lo)
-            return lat / baseline
-
-    # Beyond measured range — extrapolate linearly from last two points
-    n_lo, lat_lo = _CONTENTION_CURVE[-2]
-    n_hi, lat_hi = _CONTENTION_CURVE[-1]
-    slope = (lat_hi - lat_lo) / (n_hi - n_lo)
-    lat = lat_hi + slope * (per_server_n - n_hi)
+def _mutation_contention_multiplier(per_server_n: float) -> float:
+    baseline = _MUTATION_CONTENTION[0][1]
+    lat = _piecewise_interp(_MUTATION_CONTENTION, max(1, per_server_n))
     return lat / baseline
 
 
+def _dag_contention_multiplier(global_concurrent: int) -> float:
+    return _piecewise_interp(_CHAIN_CONTENTION, max(1, global_concurrent))
+
+
 # ---------------------------------------------------------------------------
-# Shared server pool — tracks global load across all runs
+# Shared server pools
 # ---------------------------------------------------------------------------
 
 
 class ServerPool:
-    """Simulates M servers shared by all runs with round-robin assignment."""
+    """Simulates servers shared by all runs with round-robin assignment."""
 
     def __init__(self, num_servers: int):
         self.num_servers = num_servers
-        self._load = [0] * num_servers  # concurrent requests per server
-        self._next_server = 0
+        self._load = [0] * num_servers
+        self._next = 0
         self._lock = asyncio.Lock()
 
-    async def acquire_server(self) -> int:
-        """Pick a server (round-robin) and increment its load."""
+    async def acquire(self) -> int:
         async with self._lock:
-            server_id = self._next_server
-            self._next_server = (self._next_server + 1) % self.num_servers
-            self._load[server_id] += 1
-            return server_id
+            sid = self._next
+            self._next = (self._next + 1) % self.num_servers
+            self._load[sid] += 1
+            return sid
 
-    async def release_server(self, server_id: int) -> None:
+    async def release(self, sid: int) -> None:
         async with self._lock:
-            self._load[server_id] -= 1
+            self._load[sid] -= 1
 
-    def get_per_server_load(self, server_id: int) -> int:
-        return self._load[server_id]
+    def per_server_load(self, sid: int) -> int:
+        return self._load[sid]
 
     @property
     def total_load(self) -> int:
         return sum(self._load)
-
-    @property
-    def max_load(self) -> int:
-        return max(self._load) if self._load else 0
 
 
 # ---------------------------------------------------------------------------
@@ -133,21 +180,32 @@ class ServerPool:
 class RunMetrics:
     label: str
     mutations_completed: int = 0
-    max_concurrent: int = 0
-    _concurrent: int = 0
-    latencies: list[float] = field(default_factory=list)
+    evals_completed: int = 0
+    programs_ingested: int = 0
+    max_concurrent_mutations: int = 0
+    max_concurrent_evals: int = 0
+    _concurrent_mutations: int = 0
+    _concurrent_evals: int = 0
+    mutation_latencies: list[float] = field(default_factory=list)
+    eval_latencies: list[float] = field(default_factory=list)
 
-    def throughput(self, sim_wall_s: float) -> float:
+    def ingestion_rate(self, sim_wall_s: float) -> float:
+        return self.programs_ingested / sim_wall_s * 60 if sim_wall_s > 0 else 0
+
+    def mutation_rate(self, sim_wall_s: float) -> float:
         return self.mutations_completed / sim_wall_s * 60 if sim_wall_s > 0 else 0
 
     def summary(self, sim_wall_s: float) -> str:
-        rate = self.throughput(sim_wall_s)
-        avg_lat = statistics.mean(self.latencies) if self.latencies else 0
+        irate = self.ingestion_rate(sim_wall_s)
+        avg_mut = (
+            statistics.mean(self.mutation_latencies) if self.mutation_latencies else 0
+        )
+        avg_eval = statistics.mean(self.eval_latencies) if self.eval_latencies else 0
         return (
-            f"  {self.label}: {rate:>6.2f} mutants/min | "
-            f"mutations={self.mutations_completed} | "
-            f"max_concurrent={self.max_concurrent} | "
-            f"avg_latency={avg_lat:.1f}s"
+            f"  {self.label}: {irate:>5.2f} ingested/min | "
+            f"mut={self.mutations_completed} eval={self.evals_completed} "
+            f"ingested={self.programs_ingested} | "
+            f"avg_mut={avg_mut:.0f}s avg_eval={avg_eval:.0f}s"
         )
 
 
@@ -158,14 +216,54 @@ class RunMetrics:
 
 async def create_run(
     label: str,
-    pool: ServerPool,
+    mutation_pool: ServerPool,
+    chain_pool: ServerPool,
     max_in_flight: int,
+    epoch_size: int,
     max_generations: int,
-    use_adaptive: bool,
-) -> tuple[SteadyStateEvolutionEngine, RunMetrics, dict]:
-    """Create one engine instance wired to the shared server pool."""
+) -> tuple[SteadyStateEvolutionEngine, RunMetrics]:
+    """Create one engine instance wired to shared server pools."""
     metrics = RunMetrics(label=label)
-    completed: dict[str, Program] = {}
+    pending_programs: dict[str, Program] = {}  # pid -> prog (QUEUED, awaiting eval)
+    done_programs: dict[str, Program] = {}
+    discarded: set[str] = set()
+
+    # Background DAG evaluator queue
+    eval_queue: asyncio.Queue[tuple[str, Program]] = asyncio.Queue()
+
+    async def dag_evaluator():
+        while True:
+            pid, prog = await eval_queue.get()
+            try:
+                metrics._concurrent_evals += 1
+                metrics.max_concurrent_evals = max(
+                    metrics.max_concurrent_evals, metrics._concurrent_evals
+                )
+
+                sid = await chain_pool.acquire()
+                global_conc = chain_pool.total_load
+
+                base_dur = max(60.0, _DAG_DIST.rvs())
+                mult = _dag_contention_multiplier(global_conc)
+                real_dur = base_dur * mult
+                sim_dur = real_dur * TIMESCALE
+
+                await asyncio.sleep(sim_dur)
+                await chain_pool.release(sid)
+
+                metrics.eval_latencies.append(real_dur)
+                metrics.evals_completed += 1
+                metrics._concurrent_evals -= 1
+
+                prog.state = ProgramState.DONE
+                done_programs[pid] = prog
+            except asyncio.CancelledError:
+                metrics._concurrent_evals -= 1
+                raise
+
+    # Start eval workers
+    num_eval_workers = chain_pool.num_servers * 4
+    eval_tasks = [asyncio.create_task(dag_evaluator()) for _ in range(num_eval_workers)]
 
     storage = AsyncMock()
     strategy = AsyncMock()
@@ -184,12 +282,11 @@ async def create_run(
 
     config = SteadyStateEngineConfig(
         max_in_flight=max_in_flight,
-        max_mutations_per_generation=max_in_flight,
+        max_mutations_per_generation=epoch_size,
         max_generations=max_generations,
         loop_interval=0.001,
     )
 
-    # If not adaptive, monkey-patch to use plain Semaphore after construction
     engine = SteadyStateEvolutionEngine(
         storage=storage,
         strategy=strategy,
@@ -201,64 +298,69 @@ async def create_run(
     engine.config.program_acceptor = MagicMock()
     engine.config.program_acceptor.is_accepted.return_value = True
 
-    if not use_adaptive:
-        # Replace adaptive with a plain semaphore + no-op report_latency
-        static_sem = asyncio.Semaphore(max_in_flight)
-        static_sem.report_latency = lambda lat: None  # type: ignore[attr-defined]
-        static_sem.capacity = max_in_flight  # type: ignore[attr-defined]
-        engine._in_flight_sema = static_sem
-
     async def fake_generate(elites, **kwargs):
-        metrics._concurrent += 1
-        metrics.max_concurrent = max(metrics.max_concurrent, metrics._concurrent)
+        metrics._concurrent_mutations += 1
+        metrics.max_concurrent_mutations = max(
+            metrics.max_concurrent_mutations, metrics._concurrent_mutations
+        )
 
-        # Acquire a server slot
-        server_id = await pool.acquire_server()
-        per_server = pool.get_per_server_load(server_id)
+        sid = await mutation_pool.acquire()
+        per_server = mutation_pool.per_server_load(sid)
 
-        # Sample base latency + apply real contention multiplier
-        raw = random.expovariate(1.0 / _LLM_MEAN_S)
-        base = max(_LLM_MIN_S, min(_LLM_MAX_S, raw))
-        mult = _contention_multiplier(per_server)
-        real_latency = base * mult
-        sim_latency = real_latency * TIMESCALE
+        base_dur = max(30.0, _LLM_DIST.rvs())
+        mult = _mutation_contention_multiplier(per_server)
+        real_dur = base_dur * mult
+        sim_dur = real_dur * TIMESCALE
 
-        await asyncio.sleep(sim_latency)
-        await pool.release_server(server_id)
+        await asyncio.sleep(sim_dur)
+        await mutation_pool.release(sid)
 
-        prog = Program(code="def solve(): return 42", state=ProgramState.DONE)
-        completed[prog.id] = prog
+        metrics.mutation_latencies.append(real_dur)
         metrics.mutations_completed += 1
-        metrics.latencies.append(real_latency)
-        metrics._concurrent -= 1
+        metrics._concurrent_mutations -= 1
+
+        prog = Program(code="def solve(): return 42", state=ProgramState.QUEUED)
+        pending_programs[prog.id] = prog
+        await eval_queue.put((prog.id, prog))
         return [prog.id]
 
     def mget_side(ids, **kw):
-        return [completed[pid] for pid in ids if pid in completed]
+        result = []
+        for pid in ids:
+            if pid in done_programs:
+                result.append(done_programs[pid])
+            elif pid in pending_programs:
+                result.append(pending_programs[pid])
+            else:
+                result.append(None)
+        return result
 
     storage.mget.side_effect = mget_side
 
     def get_ids_side(status):
         if status == ProgramState.DONE.value:
-            return [pid for pid, p in completed.items() if p.state == ProgramState.DONE]
+            return list(done_programs.keys())
+        if status == ProgramState.QUEUED.value:
+            return [pid for pid in pending_programs if pid not in done_programs]
         return []
 
     storage.get_ids_by_status.side_effect = get_ids_side
 
-    # Track ingestion
     orig_ingest = engine._ingest_batch
 
     async def tracked_ingest(pids):
         result = await orig_ingest(pids)
+        added, _ = result
+        metrics.programs_ingested += added
         for pid in pids:
-            if pid in completed:
-                completed[pid].state = ProgramState.DISCARDED
+            done_programs.pop(pid, None)
+            pending_programs.pop(pid, None)
+            discarded.add(pid)
         return result
 
     engine._ingest_batch = tracked_ingest
 
-    # Monkey-patch _create_single_mutant directly on THIS engine instance
-    # so each run uses its own fake_generate (avoids shared module patch).
+    # Monkey-patch _create_single_mutant for this engine instance
     async def patched_create_single_mutant(elites):
         ids = await fake_generate(elites)
         if ids:
@@ -266,6 +368,9 @@ async def create_run(
         return ids
 
     engine._create_single_mutant = patched_create_single_mutant
+
+    # Store eval_tasks on engine for cleanup
+    engine._bench_eval_tasks = eval_tasks  # type: ignore[attr-defined]
 
     return engine, metrics
 
@@ -277,22 +382,24 @@ async def create_run(
 
 async def run_simulation(
     num_runs: int = 4,
-    num_servers: int = 4,
-    max_in_flight: int = 8,
+    num_mutation_servers: int = 3,
+    num_chain_servers: int = 4,
+    max_in_flight: int = 5,
+    epoch_size: int = 8,
     duration_s: float = 5.0,
     max_generations: int = 500,
-    use_adaptive: bool = True,
 ) -> tuple[list[RunMetrics], float]:
-    """Run num_runs engines concurrently sharing num_servers."""
-    pool = ServerPool(num_servers)
+    """Run num_runs engines concurrently sharing server pools."""
+    mutation_pool = ServerPool(num_mutation_servers)
+    chain_pool = ServerPool(num_chain_servers)
 
     engines = []
     all_metrics = []
 
     for i in range(num_runs):
-        label = f"{'adaptive' if use_adaptive else 'static'}-R{i + 1}"
+        label = f"R{i + 1}"
         engine, metrics = await create_run(
-            label, pool, max_in_flight, max_generations, use_adaptive
+            label, mutation_pool, chain_pool, max_in_flight, epoch_size, max_generations
         )
         engines.append(engine)
         all_metrics.append(metrics)
@@ -302,8 +409,14 @@ async def run_simulation(
             await asyncio.wait_for(engine.run(), timeout=duration_s)
         except TimeoutError:
             engine._running = False
+        finally:
+            # Cleanup eval tasks
+            for t in getattr(engine, "_bench_eval_tasks", []):
+                t.cancel()
+            await asyncio.gather(
+                *getattr(engine, "_bench_eval_tasks", []), return_exceptions=True
+            )
 
-    # Run all engines concurrently
     tasks = [asyncio.create_task(run_one(eng)) for eng in engines]
     t0 = time.monotonic()
     await asyncio.gather(*tasks, return_exceptions=True)
@@ -318,132 +431,98 @@ def print_results(
     all_metrics: list[RunMetrics],
     sim_wall: float,
 ):
+    total_ingested = sum(m.programs_ingested for m in all_metrics)
     total_mutations = sum(m.mutations_completed for m in all_metrics)
-    total_rate = total_mutations / sim_wall * 60 if sim_wall > 0 else 0
-    all_lats = [lat for m in all_metrics for lat in m.latencies]
-    avg_lat = statistics.mean(all_lats) if all_lats else 0
-    p95_lat = sorted(all_lats)[int(len(all_lats) * 0.95)] if len(all_lats) >= 2 else 0
+    total_irate = total_ingested / sim_wall * 60 if sim_wall > 0 else 0
+    total_mrate = total_mutations / sim_wall * 60 if sim_wall > 0 else 0
+
+    all_mut_lats = [lat for m in all_metrics for lat in m.mutation_latencies]
+    all_eval_lats = [lat for m in all_metrics for lat in m.eval_latencies]
+    avg_mut = statistics.mean(all_mut_lats) if all_mut_lats else 0
+    avg_eval = statistics.mean(all_eval_lats) if all_eval_lats else 0
 
     print(f"\n=== {label} ===")
     print(f"Simulated wall clock: {sim_wall:.0f}s ({sim_wall / 60:.1f}min)")
     print(f"Total mutations:      {total_mutations}")
-    print(f"Total throughput:     {total_rate:.2f} mutants/min (across all runs)")
-    print(f"Avg LLM latency:      {avg_lat:.1f}s")
-    print(f"P95 LLM latency:      {p95_lat:.1f}s")
+    print(f"Total ingested:       {total_ingested}")
+    print(f"Total mutation rate:  {total_mrate:.2f} mutants/min (across all runs)")
+    print(f"Total ingestion rate: {total_irate:.2f} programs/min (across all runs)")
+    print(f"Avg LLM mutation:     {avg_mut:.0f}s")
+    print(f"Avg DAG evaluation:   {avg_eval:.0f}s")
     print()
     for m in all_metrics:
         print(m.summary(sim_wall))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-run contention simulation")
+    infra = _CAL.get("infrastructure", {})
+    default_mut = infra.get("mutation_servers", 3)
+    default_chain = infra.get("chain_servers", 4)
+    default_mif = infra.get("max_in_flight", 5)
+    default_epoch = infra.get("epoch_size", 8)
+
+    parser = argparse.ArgumentParser(
+        description="Multi-run contention simulation (two-phase lifecycle)"
+    )
     parser.add_argument("--runs", type=int, default=4)
-    parser.add_argument("--servers", type=int, default=4)
-    parser.add_argument("--max-in-flight", type=int, default=8)
+    parser.add_argument("--mut-servers", type=int, default=default_mut)
+    parser.add_argument("--chain-servers", type=int, default=default_chain)
+    parser.add_argument("--max-in-flight", type=int, default=default_mif)
+    parser.add_argument("--epoch-size", type=int, default=default_epoch)
     parser.add_argument("--duration", type=float, default=5.0, help="Bench seconds")
     parser.add_argument("--max-generations", type=int, default=500)
-    parser.add_argument(
-        "--compare",
-        action="store_true",
-        help="Compare static vs adaptive side by side",
-    )
-    parser.add_argument(
-        "--sweep",
-        action="store_true",
-        help="Sweep max_in_flight for static mode",
-    )
+    parser.add_argument("--sweep", action="store_true", help="Sweep max_in_flight")
     args = parser.parse_args()
 
-    if args.compare:
-        random.seed(42)
-        static_metrics, static_sim = asyncio.run(
-            run_simulation(
-                args.runs,
-                args.servers,
-                args.max_in_flight,
-                args.duration,
-                args.max_generations,
-                use_adaptive=False,
-            )
-        )
-        print_results(
-            f"STATIC (max_in_flight={args.max_in_flight})",
-            static_metrics,
-            static_sim,
-        )
-
-        random.seed(42)
-        adaptive_metrics, adaptive_sim = asyncio.run(
-            run_simulation(
-                args.runs,
-                args.servers,
-                args.max_in_flight,
-                args.duration,
-                args.max_generations,
-                use_adaptive=True,
-            )
-        )
-        print_results(
-            f"ADAPTIVE (ceiling={args.max_in_flight})",
-            adaptive_metrics,
-            adaptive_sim,
-        )
-
-        # Delta
-        s_total = sum(m.mutations_completed for m in static_metrics)
-        a_total = sum(m.mutations_completed for m in adaptive_metrics)
-        s_rate = s_total / static_sim * 60
-        a_rate = a_total / adaptive_sim * 60
-        print("\n--- Comparison ---")
-        print(f"Static total:   {s_rate:.2f} mutants/min ({s_total} mutations)")
-        print(f"Adaptive total: {a_rate:.2f} mutants/min ({a_total} mutations)")
-        if s_rate > 0:
-            print(f"Speedup:        {a_rate / s_rate:.2f}x")
-
-    elif args.sweep:
-        flight_values = [2, 4, 6, 8, 12, 16]
+    if args.sweep:
+        flight_values = [2, 3, 4, 5, 6, 8, 10, 12, 16]
         print(
-            f"=== Sweep: {args.runs} runs, {args.servers} servers "
-            f"(static max_in_flight) ==="
+            f"=== Sweep: {args.runs} runs, {args.mut_servers} mut servers, "
+            f"{args.chain_servers} chain servers ==="
         )
         for mif in flight_values:
             random.seed(42)
             metrics, sim_wall = asyncio.run(
                 run_simulation(
                     args.runs,
-                    args.servers,
+                    args.mut_servers,
+                    args.chain_servers,
                     mif,
+                    args.epoch_size,
                     args.duration,
                     args.max_generations,
-                    use_adaptive=False,
                 )
             )
-            total = sum(m.mutations_completed for m in metrics)
-            rate = total / sim_wall * 60 if sim_wall > 0 else 0
-            lats = [lat for m in metrics for lat in m.latencies]
-            avg_lat = statistics.mean(lats) if lats else 0
+            total_ingested = sum(m.programs_ingested for m in metrics)
+            total_mutations = sum(m.mutations_completed for m in metrics)
+            irate = total_ingested / sim_wall * 60 if sim_wall > 0 else 0
+            mrate = total_mutations / sim_wall * 60 if sim_wall > 0 else 0
+            all_eval = [lat for m in metrics for lat in m.eval_latencies]
+            avg_eval = statistics.mean(all_eval) if all_eval else 0
             print(
                 f"  max_in_flight={mif:>2d} | "
-                f"{rate:>6.2f} mutants/min | "
-                f"mutations={total} | "
-                f"avg_latency={avg_lat:.1f}s"
+                f"{irate:>5.2f} ingested/min | "
+                f"{mrate:>5.2f} mutants/min | "
+                f"ingested={total_ingested} mut={total_mutations} | "
+                f"avg_eval={avg_eval:.0f}s"
             )
-
     else:
         random.seed(42)
         metrics, sim_wall = asyncio.run(
             run_simulation(
                 args.runs,
-                args.servers,
+                args.mut_servers,
+                args.chain_servers,
                 args.max_in_flight,
+                args.epoch_size,
                 args.duration,
                 args.max_generations,
-                use_adaptive=True,
             )
         )
         print_results(
-            f"{args.runs} runs, {args.servers} servers, "
-            f"max_in_flight={args.max_in_flight} (adaptive)",
+            f"{args.runs} runs, {args.mut_servers} mut servers, "
+            f"{args.chain_servers} chain servers, "
+            f"max_in_flight={args.max_in_flight}",
             metrics,
             sim_wall,
         )
