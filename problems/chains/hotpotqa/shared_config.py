@@ -6,13 +6,14 @@ from pathlib import Path
 import random
 from typing import Literal
 
+from tools.no_proxy import ensure_no_proxy
+
+ensure_no_proxy()
+
 # --- LLM Configuration ---
-#
-# HOTPOTQA_CHAIN_URL overrides the chain-execution endpoint at runtime.
-# Use to split validation load across two vLLM ports:
-#   Runs A/C: HOTPOTQA_CHAIN_URL=http://10.226.17.25:8001/v1  (default)
-#   Runs B/D: HOTPOTQA_CHAIN_URL=http://10.226.17.25:8000/v1
-_CHAIN_URL = os.environ.get("HOTPOTQA_CHAIN_URL", "http://10.226.17.25:8001/v1")
+# All chain requests go through the LiteLLM proxy (INTERNAL_IP:4000).
+# Start the proxy with: bash tools/litellm.sh --background
+_CHAIN_URL = os.environ.get("HOTPOTQA_CHAIN_URL", "http://localhost:8000/v1")
 
 LLM_CONFIG = {
     "model": "Qwen/Qwen3-8B",
@@ -29,7 +30,7 @@ LLM_CONFIG = {
         },
     },
     "client_kwargs": {
-        "api_key": "None",
+        "api_key": "sk-gigaevo",
         "base_url": _CHAIN_URL,
     },
 }
