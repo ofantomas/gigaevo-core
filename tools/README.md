@@ -8,13 +8,13 @@ where `prefix` = `problem.name` from the Hydra config (e.g. `chains/hotpotqa/sta
 All tool commands use the project venv and require `PYTHONPATH=.`:
 
 ```bash
-PYTHONPATH=. /home/jovyan/envs/evo_fast/bin/python tools/<tool>.py ...
+PYTHONPATH=. $GIGAEVO_PYTHON tools/<tool>.py ...
 ```
 
 Shell scripts use `$GIGAEVO_PYTHON` (falls back to `python3`):
 
 ```bash
-export GIGAEVO_PYTHON=/home/jovyan/envs/evo_fast/bin/python
+export GIGAEVO_PYTHON=/home/jovyan/.mlspace/envs/evo/bin/python3  # adjust for your environment
 ```
 
 Protocol gates to run before launch and before merge:
@@ -133,7 +133,7 @@ Each experiment has `experiments/<task>/<name>/run_test_eval.sh`. Run it while R
 the held-out test set and writes results to `test_evals/results.json`.
 
 ```bash
-export GIGAEVO_PYTHON=/home/jovyan/envs/evo_fast/bin/python
+export GIGAEVO_PYTHON=/home/jovyan/.mlspace/envs/evo/bin/python3  # adjust for your environment
 bash experiments/hotpotqa/push/run_test_eval.sh
 ```
 
