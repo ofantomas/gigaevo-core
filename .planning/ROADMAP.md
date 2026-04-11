@@ -10,7 +10,7 @@ Bottom-up build: shared library first (everything depends on it), then notificat
 - [x] **Phase 2: Notifications** - Telegram + PR channels with strategy pattern, fan-out dispatcher
 - [x] **Phase 3: Watchdog** - Generic engine with plugin ABC, 4 experiment-type plugins
 - [x] **Phase 4: CLI** - Unified `gigaevo` entry point, subcommands, structured output modes
-- [ ] **Phase 5: Integration** - Composite lifecycle commands, anomaly detector, tool absorption, migration
+- [x] **Phase 5: Integration** - Composite lifecycle commands, anomaly detector, tool absorption, migration
 
 ## Phase Details
 
@@ -107,12 +107,12 @@ Plans:
   5. Old `tools/*.py` scripts print deprecation warning then delegate to `gigaevo` CLI
   6. `requests` dependency removed from `pyproject.toml` (replaced by httpx)
   7. `tools/README.md` and `CLAUDE.md` updated to reference `gigaevo` CLI commands
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 05-01: Checkpoint + anomaly detector (gigaevo checkpoint, pluggable rules)
-- [ ] 05-02: Composite lifecycle commands (launch, closeout, restart)
-- [ ] 05-03: Tool absorption (shims → removal) + dependency cleanup + docs update
+- [x] 05-01: Checkpoint + anomaly detector (gigaevo checkpoint, pluggable rules)
+- [x] 05-02: Composite lifecycle commands (launch, closeout, restart)
+- [x] 05-03: Tool absorption (shims → removal) + dependency cleanup + docs update
 
 ## Progress
 
@@ -122,8 +122,8 @@ Plans:
 | 2. Notifications | 4/4 | Complete | 2026-04-11 |
 | 3. Watchdog | 5/5 | Complete | 2026-04-11 |
 | 4. CLI | 4/4 | Complete | 2026-04-12 |
-| 5. Integration | 0/3 | Not started | - |
+| 5. Integration | 3/3 | Complete | 2026-04-12 |
 
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-12 after Phase 4 complete (87 CLI tests)*
+*Last updated: 2026-04-12 after Phase 5 complete (96 CLI tests, 339 monitoring tests)*
