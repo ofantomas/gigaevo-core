@@ -7,7 +7,7 @@ Bottom-up build: shared library first (everything depends on it), then notificat
 ## Phases
 
 - [x] **Phase 1: Foundation** - Shared monitoring library, RunSpec parser, manifest schema validation
-- [ ] **Phase 2: Notifications** - Telegram + PR channels with strategy pattern, fan-out dispatcher
+- [x] **Phase 2: Notifications** - Telegram + PR channels with strategy pattern, fan-out dispatcher
 - [ ] **Phase 3: Watchdog** - Generic engine with plugin ABC, 4 experiment-type plugins
 - [ ] **Phase 4: CLI** - Unified `gigaevo` entry point, subcommands, structured output modes
 - [ ] **Phase 5: Integration** - Composite lifecycle commands, anomaly detector, tool absorption, migration
@@ -45,10 +45,10 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 02-01: NotificationChannel ABC + StatusUpdate data model + formatters (GitHub markdown, Telegram markdown)
-- [ ] 02-02: TelegramChannel with httpx, retry, consecutive failure tracking, startup probe
-- [ ] 02-03: GitHubPRChannel with plot upload, rolling comment, cache-busting
-- [ ] 02-04: NotificationDispatcher fan-out + alert severity + cooldown
+- [x] 02-01: NotificationChannel ABC + StatusUpdate data model + formatters (GitHub markdown, Telegram markdown)
+- [x] 02-02: TelegramChannel with httpx, retry, consecutive failure tracking, startup probe
+- [x] 02-03: GitHubPRChannel with plot upload, rolling comment, cache-busting
+- [x] 02-04: NotificationDispatcher fan-out + alert severity + cooldown
 
 ### Phase 3: Watchdog
 **Goal**: Generic watchdog engine with plugin system. One `run_watchdog.py` works for all experiment types. Plugins control only plot generation and status formatting — everything else (loop, heartbeat, Redis, notifications) is the engine.
