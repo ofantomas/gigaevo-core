@@ -8,7 +8,7 @@ Bottom-up build: shared library first (everything depends on it), then notificat
 
 - [x] **Phase 1: Foundation** - Shared monitoring library, RunSpec parser, manifest schema validation
 - [x] **Phase 2: Notifications** - Telegram + PR channels with strategy pattern, fan-out dispatcher
-- [ ] **Phase 3: Watchdog** - Generic engine with plugin ABC, 4 experiment-type plugins
+- [x] **Phase 3: Watchdog** - Generic engine with plugin ABC, 4 experiment-type plugins
 - [ ] **Phase 4: CLI** - Unified `gigaevo` entry point, subcommands, structured output modes
 - [ ] **Phase 5: Integration** - Composite lifecycle commands, anomaly detector, tool absorption, migration
 
@@ -24,7 +24,7 @@ Bottom-up build: shared library first (everything depends on it), then notificat
   3. Manifest loads with Pydantic validation — invalid YAML produces actionable error messages, not tracebacks
   4. `AlertDetector.check(snapshots)` detects stall, crash, high-invalidity, completion using multi-signal detection (gen count + running programs + new submissions)
   5. (Phase 5) All 3 existing `parse_run_arg` implementations in `tools/` are replaced by `RunSpec.parse` — deferred from Phase 1 per MIG-01 constraint (no `tools/` changes until Phase 5)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
 - [x] 01-01: RunSpec parser + RunSnapshot dataclass + canonical Redis queries
@@ -42,7 +42,7 @@ Plans:
   4. Telegram status table matches `gigaevo status` output (all runs, all metrics, PIDs, invalidity %)
   5. Plot PNGs sent as Telegram photos with captions, and embedded in PR comments with cache-busting URLs
   6. Alert cooldown: same alert type not re-sent within configurable window (default: 2 cycles)
-**Plans**: TBD
+**Plans**: 4 plans
 
 Plans:
 - [x] 02-01: NotificationChannel ABC + StatusUpdate data model + formatters (GitHub markdown, Telegram markdown)
@@ -64,14 +64,14 @@ Plans:
   7. `experiments/_template/run_watchdog.py` is a 5-line shim that delegates to the engine
   8. Watchdog self-monitoring: on max restart, posts FINAL alert to both Telegram AND PR before exiting
   9. Resource management: `plt.close(fig)` in finally blocks, bounded plot file retention, memory RSS logged each cycle
-**Plans**: TBD
+**Plans**: 5 plans
 
 Plans:
-- [ ] 03-01: WatchdogPlugin ABC + registry + WatchdogConfig
-- [ ] 03-02: WatchdogEngine core loop (heartbeat, collect, alert, dispatch, SIGTERM, retry)
-- [ ] 03-03: SoloPlugin + AdversarialPlugin
-- [ ] 03-04: HeilbronPlugin + PromptCoevoPlugin
-- [ ] 03-05: Template shim + integration test (engine + mock plugin + mock channels + fakeredis)
+- [x] 03-01-PLAN.md — WatchdogPlugin ABC + registry + WatchdogConfig
+- [x] 03-02-PLAN.md — WatchdogEngine core loop (heartbeat, collect, alert, dispatch, SIGTERM, retry)
+- [x] 03-03-PLAN.md — SoloPlugin + AdversarialPlugin
+- [x] 03-04-PLAN.md — HeilbronPlugin + PromptCoevoPlugin
+- [x] 03-05-PLAN.md — Template shim + integration test (engine + mock plugin + mock channels + fakeredis)
 
 ### Phase 4: CLI
 **Goal**: Unified `gigaevo` entry point that absorbs all standalone tools. Two-level subcommands with structured output. Every command works in both `--experiment` and `--run` mode.
@@ -119,11 +119,11 @@ Plans:
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 3/3 | Complete | 2026-04-11 |
-| 2. Notifications | 0/4 | Not started | - |
-| 3. Watchdog | 0/5 | Not started | - |
+| 2. Notifications | 4/4 | Complete | 2026-04-11 |
+| 3. Watchdog | 5/5 | Complete | 2026-04-11 |
 | 4. CLI | 0/4 | Not started | - |
 | 5. Integration | 0/3 | Not started | - |
 
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-11 after Phase 1 execution complete*
+*Last updated: 2026-04-11 after Phase 3 complete (339 tests)*
