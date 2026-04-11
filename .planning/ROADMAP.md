@@ -9,7 +9,7 @@ Bottom-up build: shared library first (everything depends on it), then notificat
 - [x] **Phase 1: Foundation** - Shared monitoring library, RunSpec parser, manifest schema validation
 - [x] **Phase 2: Notifications** - Telegram + PR channels with strategy pattern, fan-out dispatcher
 - [x] **Phase 3: Watchdog** - Generic engine with plugin ABC, 4 experiment-type plugins
-- [ ] **Phase 4: CLI** - Unified `gigaevo` entry point, subcommands, structured output modes
+- [x] **Phase 4: CLI** - Unified `gigaevo` entry point, subcommands, structured output modes
 - [ ] **Phase 5: Integration** - Composite lifecycle commands, anomaly detector, tool absorption, migration
 
 ## Phase Details
@@ -90,10 +90,10 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 04-01-PLAN.md -- CLI skeleton: Click group + rich-click + global flags + OutputFormatter + RunResolver + lazy imports
-- [ ] 04-02-PLAN.md -- Read-only subcommands: status, trajectory, top, logs (using monitoring lib)
-- [ ] 04-03-PLAN.md -- Plotting + export subcommands: plot comparison, plot trajectory, export csv, export frontier
-- [ ] 04-04-PLAN.md -- Mutating + long-running subcommands: flush (--confirm gate) + watchdog
+- [x] 04-01-PLAN.md -- CLI skeleton: Click group + rich-click + global flags + OutputFormatter + RunResolver + lazy imports
+- [x] 04-02-PLAN.md -- Read-only subcommands: status, trajectory, top, logs (using monitoring lib)
+- [x] 04-03-PLAN.md -- Plotting + export subcommands: plot comparison, plot trajectory, export csv, export frontier
+- [x] 04-04-PLAN.md -- Mutating + long-running subcommands: flush (--confirm gate) + watchdog
 
 ### Phase 5: Integration
 **Goal**: Composite lifecycle commands, pluggable anomaly detector, tool absorption. Old `tools/*.py` scripts become thin shims then get removed.
@@ -121,9 +121,9 @@ Plans:
 | 1. Foundation | 3/3 | Complete | 2026-04-11 |
 | 2. Notifications | 4/4 | Complete | 2026-04-11 |
 | 3. Watchdog | 5/5 | Complete | 2026-04-11 |
-| 4. CLI | 0/4 | In Progress | - |
+| 4. CLI | 4/4 | Complete | 2026-04-12 |
 | 5. Integration | 0/3 | Not started | - |
 
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-12 after Phase 4 planning (4 plans created)*
+*Last updated: 2026-04-12 after Phase 4 complete (87 CLI tests)*
