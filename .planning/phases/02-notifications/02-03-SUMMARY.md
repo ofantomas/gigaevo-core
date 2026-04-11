@@ -19,8 +19,8 @@ GitHubPRChannel -- a concrete NotificationChannel that posts status tables and p
 ## Test results
 - 22 new tests, all passing
 - 227 total monitoring tests pass (180 pre-existing + 25 TelegramChannel + 22 GitHubPRChannel)
-- Timing: ~2s for non-telegram tests, ~30s including telegram tests
+- Timing: ~29s for full monitoring suite (includes telegram tests with real async)
 - Linting: ruff check + ruff format clean
 
 ## Issues encountered
-- None. Tasks 1-4 and partial task 5+6 implementation were carried over from a prior session on this branch (interleaved with 02-02 work). Remaining test additions and verification completed cleanly.
+- None. Tasks 1 and 3 (RED tests) were carried over from a prior session. Tasks 2, 4, 5+6, and 7 (GREEN implementation + lint) completed cleanly in this session.
