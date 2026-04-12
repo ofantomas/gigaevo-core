@@ -35,7 +35,10 @@ Phase 5: Integration — **COMPLETE** (3/3 plans, 96 CLI tests). Phase 1 (3/3, 1
 ### Phase 01 (CLI Tooling Update) Progress
 - Plan 01-01 COMPLETE: `gigaevo manifest` CLI subcommand group (get/set/update/gate/pr-description), 19 tests
 - Plan 01-02 COMPLETE: 6 skill/agent files migrated to gigaevo CLI; project-pm deleted; 10 files changed (4 deleted, 6 updated)
-- Plan 01-03: Pending (agent migration / cleanup)
+- Plan 01-03 COMPLETE: 5 heavy skills migrated (launch/closeout/checkpoint/restart/run-experiment); pm_audit removed from launch+closeout; 6 files changed; 99 gigaevo CLI refs across all skills
+
+### Phase 01 Summary
+All 3 plans complete. Phase-wide verification: 0 PYTHONPATH (excl. diagnose/evals), 0 manifest imports, 0 pm_audit, 99 gigaevo CLI references.
 
 ---
-*Last updated: 2026-04-12 after 01-02 skill migration plan complete*
+*Last updated: 2026-04-12 after 01-03 heavy skill migration plan complete*
