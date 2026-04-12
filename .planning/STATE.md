@@ -34,8 +34,8 @@ Phase 5: Integration — **COMPLETE** (3/3 plans, 96 CLI tests). Phase 1 (3/3, 1
 
 ### Phase 01 (CLI Tooling Update) Progress
 - Plan 01-01 COMPLETE: `gigaevo manifest` CLI subcommand group (get/set/update/gate/pr-description), 19 tests
-- Plan 01-02: Pending (skill migration)
+- Plan 01-02 COMPLETE: 6 skill/agent files migrated to gigaevo CLI; project-pm deleted; 10 files changed (4 deleted, 6 updated)
 - Plan 01-03: Pending (agent migration / cleanup)
 
 ---
-*Last updated: 2026-04-12 after 01-01 manifest CLI plan complete*
+*Last updated: 2026-04-12 after 01-02 skill migration plan complete*
