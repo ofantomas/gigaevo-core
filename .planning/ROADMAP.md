@@ -29,6 +29,18 @@
 
 Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 
+### Phase 1: Update research experiment lifecycle with CLI tooling
+
+**Goal:** Migrate all experiment lifecycle skills and agents from legacy PYTHONPATH inline Python to gigaevo CLI. Delete project-pm. Remove resource_manager.py references from skills. Zero inline Python in skills after this phase.
+**Requirements**: D-01, D-02, D-03, D-04, D-05, D-06, D-07, D-08
+**Depends on:** v1.0 MVP (Phase 5)
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Create gigaevo manifest CLI subcommand (get/set/update/gate/pr-description)
+- [ ] 01-02-PLAN.md — Delete project-pm + update batch 1 skills (design, implement, diagnose, scheduler, optimize, anomaly-detector)
+- [ ] 01-03-PLAN.md — Update batch 2 skills (launch, closeout, checkpoint, restart, run-experiment)
+
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-12 — v1.0 milestone shipped*
+*Last updated: 2026-04-12 — Phase 1 planned (3 plans, 2 waves)*
