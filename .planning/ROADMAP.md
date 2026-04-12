@@ -37,7 +37,7 @@ Full details: [v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 **Plans:** 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — Create gigaevo manifest CLI subcommand (get/set/update/gate/pr-description)
+- [x] 01-01-PLAN.md — Create gigaevo manifest CLI subcommand (get/set/update/gate/pr-description)
 - [ ] 01-02-PLAN.md — Delete project-pm + update batch 1 skills (design, implement, diagnose, scheduler, optimize, anomaly-detector)
 - [ ] 01-03-PLAN.md — Update batch 2 skills (launch, closeout, checkpoint, restart, run-experiment)
 
