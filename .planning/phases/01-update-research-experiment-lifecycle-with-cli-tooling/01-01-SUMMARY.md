@@ -90,6 +90,15 @@ None - no external service configuration required.
 - Plan 02 (skill migration) and Plan 03 (agent migration) can now replace inline Python snippets with `gigaevo -e ... manifest get/set/update/gate/pr-description` calls
 - All 115 CLI tests pass (96 existing + 19 new), zero regressions
 
+## Self-Check: PASSED
+
+- [x] gigaevo/cli/manifest_cmd.py exists
+- [x] tests/cli/test_manifest_cmd.py exists
+- [x] .planning/phases/01-update-research-experiment-lifecycle-with-cli-tooling/01-01-SUMMARY.md exists
+- [x] Commit 7daafeb8 (test RED) found
+- [x] Commit bf19391a (feat GREEN) found
+- [x] 19 test functions (>= 10 required)
+
 ---
 *Phase: 01-update-research-experiment-lifecycle-with-cli-tooling*
 *Completed: 2026-04-12*
