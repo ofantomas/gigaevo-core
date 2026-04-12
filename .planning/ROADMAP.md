@@ -41,6 +41,18 @@ Plans:
 - [x] 01-02-PLAN.md — Delete project-pm + update batch 1 skills (design, implement, diagnose, scheduler, optimize, anomaly-detector)
 - [x] 01-03-PLAN.md — Update batch 2 skills (launch, closeout, checkpoint, restart, run-experiment)
 
+### Phase 2: Fix adversarial injection logic and watchdog plots
+
+**Goal:** Fix three critical bugs in the adversarial co-evolution pipeline: (1) rewrite CompositionInjectionHook to compose D(G) as valid G programs and wire it into the engine, (2) create D-G improvement tracking and integrate per-program D selection into GradientInPromptStage, (3) fix watchdog plots by filtering sentinel values and using correct adversarial metrics/formats.
+**Requirements**: Bug fixes — no formal requirement IDs
+**Depends on:** Phase 1
+**Plans:** 3 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Fix watchdog plots: sentinel filtering + correct metric + arms-race format
+- [ ] 02-02-PLAN.md — Rewrite CompositionInjectionHook + add post_step_hook to engine
+- [ ] 02-03-PLAN.md — D-G improvement tracker + per-program D selection in GradientInPromptStage
+
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-12 — Phase 1 complete (3/3 plans, all skills migrated to gigaevo CLI)*
+*Last updated: 2026-04-12 — Phase 2 planned (3 plans, 1 wave)*
