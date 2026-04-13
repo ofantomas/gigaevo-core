@@ -61,8 +61,8 @@ Plans:
 **Plans:** 2 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — Fix metric discovery in watchdog_cmd, trajectory, top + add manifest watchdog_plugin field
-- [ ] 03-02-PLAN.md — Fix status/checkpoint metric formatting + wire analyze/collect into CLI registry
+- [x] 03-01-PLAN.md — Fix metric discovery in watchdog_cmd, trajectory, top + add manifest watchdog_plugin field
+- [x] 03-02-PLAN.md — Fix status/checkpoint metric formatting + wire analyze/collect into CLI registry
 
 ---
 *Roadmap created: 2026-04-11*
