@@ -49,10 +49,21 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 02-01-PLAN.md — Fix watchdog plots: sentinel filtering + correct metric + arms-race format
-- [ ] 02-02-PLAN.md — Rewrite CompositionInjectionHook + add post_step_hook to engine
-- [ ] 02-03-PLAN.md — D-G improvement tracker + per-program D selection in GradientInPromptStage
+- [x] 02-01-PLAN.md — Fix watchdog plots: sentinel filtering + correct metric + arms-race format
+- [x] 02-02-PLAN.md — Rewrite CompositionInjectionHook + add post_step_hook to engine
+- [x] 02-03-PLAN.md — D-G improvement tracker + per-program D selection in GradientInPromptStage
+
+### Phase 3: Fix CLI metrics reporting and manifest wiring for adversarial experiments
+
+**Goal:** Propagate metric discovery from metrics.yaml to all CLI commands and the watchdog engine so that all experiment types (standard, feedback, adversarial, prompt co-evolution, heilbron) get correct multi-metric reporting, formatted display, and proper plugin resolution.
+**Requirements**: MON-05, CLI-03, MAN-02, MON-03
+**Depends on:** Phase 2
+**Plans:** 2 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Fix metric discovery in watchdog_cmd, trajectory, top + add manifest watchdog_plugin field
+- [ ] 03-02-PLAN.md — Fix status/checkpoint metric formatting + wire analyze/collect into CLI registry
 
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-12 — Phase 2 planned (3 plans, 1 wave)*
+*Last updated: 2026-04-13 — Phase 3 planned (2 plans, 1 wave)*
