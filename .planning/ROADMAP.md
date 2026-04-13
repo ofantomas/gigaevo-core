@@ -85,10 +85,10 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Create migration target modules: manifest ops, flush ops, dataframes, plotting
-- [ ] 05-02-PLAN.md — Rewrite plugin resolution + merge heilbron into adversarial
-- [ ] 05-03-PLAN.md — Replace all tools/ imports in CLI + register manifest subcommand
-- [ ] 05-04-PLAN.md — Audit skills and agents for CLI correctness + update CLAUDE.md
+- [x] 05-01-PLAN.md — Create migration target modules: manifest ops, flush ops, dataframes, plotting
+- [x] 05-02-PLAN.md — Rewrite plugin resolution + merge heilbron into adversarial
+- [x] 05-03-PLAN.md — Replace all tools/ imports in CLI + register manifest subcommand
+- [x] 05-04-PLAN.md — Audit skills and agents for CLI correctness + update CLAUDE.md
 
 ---
 *Roadmap created: 2026-04-11*
