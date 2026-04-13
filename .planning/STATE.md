@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: unknown
-last_updated: "2026-04-13T13:11:27.204Z"
+status: Phase 05 Context Gathered
+last_updated: "2026-04-13T18:00:00.000Z"
 progress:
-  total_phases: 6
-  completed_phases: 5
-  total_plans: 20
-  completed_plans: 15
-  percent: 75
+  total_phases: 7
+  completed_phases: 6
+  total_plans: 24
+  completed_plans: 19
+  percent: 79
 ---
 
 # Project State: GigaEvo Monitoring & Tools Overhaul
@@ -49,6 +49,7 @@ Phase 5: Integration — **COMPLETE** (3/3 plans, 96 CLI tests). Phase 1 (3/3, 1
 ### Roadmap Evolution
 
 - Phase 1 added: Update research experiment lifecycle with CLI tooling
+- Phase 4 added: Wire GSD into experiment lifecycle skills for robust implementation and debugging
 
 ### Phase 01 (CLI Tooling Update) Progress
 
@@ -60,5 +61,16 @@ Phase 5: Integration — **COMPLETE** (3/3 plans, 96 CLI tests). Phase 1 (3/3, 1
 
 All 3 plans complete. Phase-wide verification: 0 PYTHONPATH (excl. diagnose/evals), 0 manifest imports, 0 pm_audit, 99 gigaevo CLI references.
 
+### Phase 04 (GSD Wiring) Progress
+
+- Plan 04-01 COMPLETE: Foundation — EVENT/ISSUE format in issues log template + 5 Known Failures (KF-01 through KF-05) in PATTERNS.md
+- Plan 04-02 COMPLETE: GSD plan generation wired into experiment-implement (Steps 4a/4b/4c) and experiment-launch (Steps 0a/0b/0c) + 3 event auto-capture points in launch
+- Plan 04-03 COMPLETE: Event auto-capture added to experiment-restart (2 events), experiment-checkpoint (2 events), experiment-diagnose (1 event)
+- Plan 04-04 COMPLETE: Known Failures promotion in experiment-closeout (Step 13a) + fix report generation in post-experiment-fixes (Steps 4/5/6)
+
+### Phase 04 Summary
+
+All 4 plans complete (2 waves). All 8 validation checks green. Requirements D-01 through D-10 satisfied. 12 commits total. No Python code changes — all modifications to Markdown skill files and knowledge stores.
+
 ---
-*Last updated: 2026-04-12 after 01-03 heavy skill migration plan complete*
+*Last updated: 2026-04-13 after Phase 04 execution complete*
