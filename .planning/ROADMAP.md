@@ -90,6 +90,20 @@ Plans:
 - [x] 05-03-PLAN.md — Replace all tools/ imports in CLI + register manifest subcommand
 - [x] 05-04-PLAN.md — Audit skills and agents for CLI correctness + update CLAUDE.md
 
+### Phase 6: Polish watchdog CLI to replicate old-watchdog behavior
+
+**Goal:** Close the feature gap between per-experiment `run_watchdog.py` scripts and `gigaevo watchdog` CLI: publication-quality time-series plots via CLI delegation, GitHub plot upload with rolling PR comments, model drift detection as anomaly rule, Redis checkpoint/completion markers, NO_PROXY auto-setup, plugin-specific Telegram formatting, configurable plot/metric/alert setup in experiment.yaml (Hydra/OOP), experiment-design/implement agent integration for monitoring config, and extensive integration tests (fakeredis + Click CliRunner) with YAML fixtures for solo/adversarial/prompt-coevo setups.
+**Requirements**: Bug fixes + feature parity — derived from 04_issues_log.md and old run_watchdog.py feature audit
+**Depends on:** Phase 5
+**Plans:** 5 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Manifest WatchdogSection schema + plugin ABC extension + model drift rule + Redis checkpoints + NO_PROXY
+- [ ] 06-02-PLAN.md — Rewrite plugins to delegate plots to CLI + add format_telegram_body + wire Telegram
+- [ ] 06-03-PLAN.md — GitHub PR channel: experiment-path plot upload + rolling comment with Redis persistence
+- [ ] 06-04-PLAN.md — YAML test fixtures (solo/adversarial/prompt-coevo) + integration tests + CliRunner end-to-end
+- [ ] 06-05-PLAN.md — Experiment lifecycle skill integration + visual plot verification
+
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-13 — Phase 5 planned (4 plans, 3 waves)*
+*Last updated: 2026-04-13 — Phase 6 planned (5 plans, 3 waves)*
