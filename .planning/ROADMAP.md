@@ -98,12 +98,12 @@ Plans:
 **Plans:** 5 plans
 
 Plans:
-- [ ] 06-01-PLAN.md — Manifest WatchdogSection schema + plugin ABC extension + model drift rule + Redis checkpoints + NO_PROXY
-- [ ] 06-02-PLAN.md — Rewrite plugins to delegate plots to CLI + add format_telegram_body + wire Telegram
-- [ ] 06-03-PLAN.md — GitHub PR channel: experiment-path plot upload + rolling comment with Redis persistence
-- [ ] 06-04-PLAN.md — YAML test fixtures (solo/adversarial/prompt-coevo) + integration tests + CliRunner end-to-end
-- [ ] 06-05-PLAN.md — Experiment lifecycle skill integration + visual plot verification
+- [x] 06-01-PLAN.md — Manifest WatchdogSection schema + plugin ABC extension + model drift rule + Redis checkpoints + NO_PROXY
+- [x] 06-02-PLAN.md — Rewrite plugins to delegate plots to CLI + add format_telegram_body + wire Telegram
+- [x] 06-03-PLAN.md — GitHub PR channel: experiment-path plot upload + rolling comment with Redis persistence
+- [x] 06-04-PLAN.md — YAML test fixtures (solo/adversarial/prompt-coevo) + integration tests + CliRunner end-to-end
+- [~] 06-05-PLAN.md — Experiment lifecycle skill integration + visual plot verification (Tasks 1-2 done; Task 3 human-verify pending)
 
 ---
 *Roadmap created: 2026-04-11*
-*Last updated: 2026-04-13 — Phase 6 planned (5 plans, 3 waves)*
+*Last updated: 2026-04-13 — Phase 6 executed (4/5 plans complete, 06-05 Task 3 awaits human visual verification)*

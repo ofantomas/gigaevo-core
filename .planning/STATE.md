@@ -2,21 +2,21 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Milestone complete
-last_updated: "2026-04-13T19:41:32.832Z"
+status: In progress
+last_updated: "2026-04-13T23:30:00.000Z"
 progress:
   total_phases: 8
   completed_phases: 7
   total_plans: 28
-  completed_plans: 23
-  percent: 82
+  completed_plans: 27
+  percent: 96
 ---
 
 # Project State: GigaEvo Monitoring & Tools Overhaul
 
 ## Current Phase
 
-Phase 5: Integration — **COMPLETE** (3/3 plans, 96 CLI tests). Phase 1 (3/3, 135 tests), Phase 2 (4/4, 251 tests), Phase 3 (5/5, 339 tests), Phase 4 (4/4, 87 tests), Phase 5 (3/3, 96 CLI tests) complete. All 5 phases done.
+Phase 6: Polish watchdog CLI — **IN PROGRESS** (4/5 plans complete, 06-05 Task 3 human-verify pending). Prior phases: 1 (3/3), 2 (4/4), 3 (5/5), 4 (4/4), 5 (3/3) all complete.
 
 ## Key Decisions Log
 
@@ -72,5 +72,15 @@ All 3 plans complete. Phase-wide verification: 0 PYTHONPATH (excl. diagnose/eval
 
 All 4 plans complete (2 waves). All 8 validation checks green. Requirements D-01 through D-10 satisfied. 12 commits total. No Python code changes — all modifications to Markdown skill files and knowledge stores.
 
+### Phase 06 (Polish Watchdog CLI) Progress
+
+- Plan 06-01 COMPLETE: WatchdogSection schema, plugin ABC, model drift rule, Redis checkpoints, NO_PROXY
+- Plan 06-02 COMPLETE: Plugin plot delegation to CLI subprocess, format_telegram_body, Telegram wiring
+- Plan 06-03 COMPLETE: GitHub PR channel with experiment-path upload, Redis rolling comment, baseline wiring
+- Plan 06-04 COMPLETE: YAML test fixtures (solo/adversarial/prompt-coevo) + 14 integration tests + 6 CliRunner tests
+- Plan 06-05 PARTIAL: Skill integration done (Tasks 1-2); Task 3 human visual verification pending
+
+**Blocking**: 06-05 Task 3 requires researcher visual inspection of watchdog plots against reference plots.
+
 ---
-*Last updated: 2026-04-13 after Phase 04 execution complete*
+*Last updated: 2026-04-13 after Phase 06 plans 01-04 complete, 05 Tasks 1-2 done*
