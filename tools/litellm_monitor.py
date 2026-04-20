@@ -12,12 +12,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime, timedelta
 import json
 import os
-import sys
-import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sys
 
 import httpx
 import matplotlib.dates as mdates
@@ -47,26 +46,30 @@ def _load_backends() -> list[dict]:
     chain = infra["chain_servers"]
     for ep in chain["endpoints"]:
         port = ep.get("port", chain.get("port", 8000))
-        backends.append({
-            "role": "chain",
-            "label": ep.get("label", f'{ep["host"]}:{port}'),
-            "host": ep["host"],
-            "port": port,
-            "url": f'http://{ep["host"]}:{port}/metrics',
-        })
+        backends.append(
+            {
+                "role": "chain",
+                "label": ep.get("label", f"{ep['host']}:{port}"),
+                "host": ep["host"],
+                "port": port,
+                "url": f"http://{ep['host']}:{port}/metrics",
+            }
+        )
     mut = infra["mutation_servers"]
     mut_port = mut.get("port", 8000)
     for ep in mut["endpoints"]:
         if ep.get("status", "active") != "active":
             continue
         port = ep.get("port", mut_port)
-        backends.append({
-            "role": "mutation",
-            "label": ep.get("label", f'{ep["host"]}:{port}'),
-            "host": ep["host"],
-            "port": port,
-            "url": f'http://{ep["host"]}:{port}/metrics',
-        })
+        backends.append(
+            {
+                "role": "mutation",
+                "label": ep.get("label", f"{ep['host']}:{port}"),
+                "host": ep["host"],
+                "port": port,
+                "url": f"http://{ep['host']}:{port}/metrics",
+            }
+        )
     return backends
 
 
@@ -142,7 +145,7 @@ def collect_snapshot() -> dict:
         proxy["healthy"] = healthy
         proxy["unhealthy"] = unhealthy
     return {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "proxy": proxy,
         "backends": per_backend,
     }
@@ -157,7 +160,7 @@ def append_history(snap: dict) -> None:
 def load_history(keep_days: float = 7.0) -> list[dict]:
     if not HISTORY.exists():
         return []
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    cutoff = datetime.now(UTC) - timedelta(days=keep_days)
     rows: list[dict] = []
     with open(HISTORY) as f:
         for line in f:
@@ -178,7 +181,9 @@ def trim_history(keep_days: float = HISTORY_KEEP_DAYS) -> None:
             f.write(json.dumps(r) + "\n")
 
 
-def _rate_matrix(rows: list[dict], metric: str, role: str) -> tuple[np.ndarray, list, np.ndarray]:
+def _rate_matrix(
+    rows: list[dict], metric: str, role: str
+) -> tuple[np.ndarray, list, np.ndarray]:
     """Build a (T-1, N_backends) rate matrix between adjacent samples.
 
     Returns (midpoint_times, labels, rates) where rates[i, j] is the average
@@ -186,9 +191,9 @@ def _rate_matrix(rows: list[dict], metric: str, role: str) -> tuple[np.ndarray, 
     Missing values become NaN — downstream nanmean/nanstd handles gaps.
     """
     times = [datetime.fromisoformat(r["ts"]) for r in rows]
-    labels = sorted({
-        lbl for r in rows for lbl, d in r["backends"].items() if d.get("role") == role
-    })
+    labels = sorted(
+        {lbl for r in rows for lbl, d in r["backends"].items() if d.get("role") == role}
+    )
     if len(rows) < 2 or not labels:
         return np.array([]), labels, np.empty((0, len(labels)))
 
@@ -240,22 +245,24 @@ def _fmt_num(n: float) -> str:
     if n is None or not np.isfinite(n):
         return "—"
     if abs(n) >= 1e6:
-        return f"{n/1e6:.1f}M"
+        return f"{n / 1e6:.1f}M"
     if abs(n) >= 1e3:
-        return f"{n/1e3:.1f}k"
+        return f"{n / 1e3:.1f}k"
     return f"{n:.0f}"
 
 
-def _raw_matrix(rows: list[dict], metric: str, role: str) -> tuple[np.ndarray, list, np.ndarray]:
+def _raw_matrix(
+    rows: list[dict], metric: str, role: str
+) -> tuple[np.ndarray, list, np.ndarray]:
     """Build (T, N) raw-value matrix (no differencing) for gauge metrics.
 
     Used for instantaneous gauges like `running` or `waiting` — counters
     should go through _rate_matrix instead.
     """
     times = [datetime.fromisoformat(r["ts"]) for r in rows]
-    labels = sorted({
-        lbl for r in rows for lbl, d in r["backends"].items() if d.get("role") == role
-    })
+    labels = sorted(
+        {lbl for r in rows for lbl, d in r["backends"].items() if d.get("role") == role}
+    )
     T, N = len(rows), len(labels)
     raw = np.full((T, N), np.nan)
     for i, r in enumerate(rows):
@@ -295,9 +302,17 @@ _CHAIN_COLORS = plt.get_cmap("tab10").colors
 _MUT_COLORS = plt.get_cmap("Set2").colors
 
 
-def _plot_timeseries(ax, rows: list[dict], role: str, metric: str, *,
-                     kind: str = "rate", ylabel: str = "req/s",
-                     title: str = "", colors=None) -> None:
+def _plot_timeseries(
+    ax,
+    rows: list[dict],
+    role: str,
+    metric: str,
+    *,
+    kind: str = "rate",
+    ylabel: str = "req/s",
+    title: str = "",
+    colors=None,
+) -> None:
     """Overlay one line per backend. kind in {"rate","gauge"}."""
     if kind == "rate":
         mids, labels, vals = _rate_matrix(rows, metric, role)
@@ -306,9 +321,17 @@ def _plot_timeseries(ax, rows: list[dict], role: str, metric: str, *,
         x, labels, vals = _raw_matrix(rows, metric, role)
 
     if len(labels) == 0 or x.size == 0 or vals.size == 0:
-        ax.text(0.5, 0.5, "accumulating samples\u2026",
-                transform=ax.transAxes, ha="center", va="center",
-                color="#888", fontsize=11, style="italic")
+        ax.text(
+            0.5,
+            0.5,
+            "accumulating samples\u2026",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            color="#888",
+            fontsize=11,
+            style="italic",
+        )
         ax.set_title(title, fontsize=11, fontweight="bold")
         ax.set_ylabel(ylabel)
         return
@@ -318,15 +341,21 @@ def _plot_timeseries(ax, rows: list[dict], role: str, metric: str, *,
 
     for j, lbl in enumerate(labels):
         y = _rolling_mean(vals[:, j], win)
-        ax.plot(x, y, color=palette[j % len(palette)], lw=1.4,
-                label=lbl, alpha=0.9)
+        ax.plot(x, y, color=palette[j % len(palette)], lw=1.4, label=lbl, alpha=0.9)
 
     ax.set_title(title, fontsize=11, fontweight="bold")
     ax.set_ylabel(ylabel)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.set_ylim(bottom=0)
-    ax.legend(loc="upper left", fontsize=7, ncol=2, frameon=False,
-              handlelength=1.4, columnspacing=0.8, labelspacing=0.3)
+    ax.legend(
+        loc="upper left",
+        fontsize=7,
+        ncol=2,
+        frameon=False,
+        handlelength=1.4,
+        columnspacing=0.8,
+        labelspacing=0.3,
+    )
 
 
 def render_plot(rows: list[dict], hours: float = 24.0) -> Path:
@@ -338,7 +367,7 @@ def render_plot(rows: list[dict], hours: float = 24.0) -> Path:
       C  chain       running requests (gauge)
       D  chain       preemption rate (req/s)
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
     rows = [r for r in rows if datetime.fromisoformat(r["ts"]) >= cutoff]
 
     try:
@@ -346,54 +375,84 @@ def render_plot(rows: list[dict], hours: float = 24.0) -> Path:
     except Exception:
         plt.style.use("seaborn-whitegrid")
 
-    plt.rcParams.update({
-        "font.family": "DejaVu Sans",
-        "font.size": 10,
-        "axes.titlesize": 11,
-        "axes.labelsize": 9,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 7,
-        "axes.grid": True,
-        "grid.alpha": 0.35,
-    })
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Sans",
+            "font.size": 10,
+            "axes.titlesize": 11,
+            "axes.labelsize": 9,
+            "xtick.labelsize": 8,
+            "ytick.labelsize": 8,
+            "legend.fontsize": 7,
+            "axes.grid": True,
+            "grid.alpha": 0.35,
+        }
+    )
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True)
     (axA, axB), (axC, axD) = axes
 
-    _plot_timeseries(axA, rows, "chain",    "success",
-                     kind="rate",  ylabel="req/s",
-                     title="Chain (Qwen3-8B) — throughput per backend",
-                     colors=_CHAIN_COLORS)
+    _plot_timeseries(
+        axA,
+        rows,
+        "chain",
+        "success",
+        kind="rate",
+        ylabel="req/s",
+        title="Chain (Qwen3-8B) — throughput per backend",
+        colors=_CHAIN_COLORS,
+    )
 
-    _plot_timeseries(axB, rows, "mutation", "success",
-                     kind="rate",  ylabel="req/s",
-                     title="Mutation (Qwen3-235B) — throughput per backend",
-                     colors=_MUT_COLORS)
+    _plot_timeseries(
+        axB,
+        rows,
+        "mutation",
+        "success",
+        kind="rate",
+        ylabel="req/s",
+        title="Mutation (Qwen3-235B) — throughput per backend",
+        colors=_MUT_COLORS,
+    )
 
-    _plot_timeseries(axC, rows, "chain",    "running",
-                     kind="gauge", ylabel="num_requests_running",
-                     title="Chain — in-flight requests per backend",
-                     colors=_CHAIN_COLORS)
+    _plot_timeseries(
+        axC,
+        rows,
+        "chain",
+        "running",
+        kind="gauge",
+        ylabel="num_requests_running",
+        title="Chain — in-flight requests per backend",
+        colors=_CHAIN_COLORS,
+    )
 
-    _plot_timeseries(axD, rows, "chain",    "preemptions",
-                     kind="rate",  ylabel="preemptions / s",
-                     title="Chain — KV-cache preemption rate per backend",
-                     colors=_CHAIN_COLORS)
+    _plot_timeseries(
+        axD,
+        rows,
+        "chain",
+        "preemptions",
+        kind="rate",
+        ylabel="preemptions / s",
+        title="Chain — KV-cache preemption rate per backend",
+        colors=_CHAIN_COLORS,
+    )
 
     for ax in (axC, axD):
         ax.set_xlabel("UTC time")
 
     n_samples = len(rows)
     if n_samples >= 2:
-        window_h = (datetime.fromisoformat(rows[-1]["ts"]) -
-                    datetime.fromisoformat(rows[0]["ts"])).total_seconds() / 3600.0
+        window_h = (
+            datetime.fromisoformat(rows[-1]["ts"])
+            - datetime.fromisoformat(rows[0]["ts"])
+        ).total_seconds() / 3600.0
     else:
         window_h = 0.0
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now_str = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     fig.suptitle(
         f"LiteLLM backends — {window_h:.1f} h window, {n_samples} samples  ·  {now_str}",
-        fontsize=13, fontweight="bold", y=0.995,
+        fontsize=13,
+        fontweight="bold",
+        y=0.995,
     )
 
     fig.tight_layout(rect=(0, 0, 1, 0.97))
@@ -401,22 +460,34 @@ def render_plot(rows: list[dict], hours: float = 24.0) -> Path:
     plt.close(fig)
     return PLOT_PATH
 
+
 def send_telegram(path: Path, caption: str) -> bool:
     sys.path.insert(0, str(ROOT))
     from tools.telegram_notify import send_photo  # noqa: E402
+
     return send_photo(str(path), caption=caption, parse_mode="")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--send", action="store_true", help="Send plot to Telegram")
-    ap.add_argument("--plot-only", action="store_true",
-                    help="Skip collection; plot from existing history")
-    ap.add_argument("--collect-only", action="store_true",
-                    help="Collect one snapshot and exit (no plot, no Telegram). "
-                         "Used by the 1-minute sampler daemon.")
-    ap.add_argument("--hours", type=float, default=24.0,
-                    help="Window (hours) for the plot. Default 24.")
+    ap.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Skip collection; plot from existing history",
+    )
+    ap.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="Collect one snapshot and exit (no plot, no Telegram). "
+        "Used by the 1-minute sampler daemon.",
+    )
+    ap.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="Window (hours) for the plot. Default 24.",
+    )
     args = ap.parse_args()
 
     if not args.plot_only:
@@ -437,7 +508,7 @@ def main() -> int:
     print(f"Plot: {path}", flush=True)
 
     if args.send:
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
         caption = f"LiteLLM proxy {int(args.hours)}h health @ {now}"
         ok = send_telegram(path, caption)
         print(f"Telegram: {'sent' if ok else 'FAILED'}", flush=True)
