@@ -37,15 +37,79 @@ If either fails, STOP — do not start the plan.
 
 ---
 
-## Task 1: `ParseMetricsStage` — new stage that calls aggregator
+## Task 1: `ParseMetricsStage` + `NullAggregator` sentinel
 
 **Files:**
+- Modify: `gigaevo/programs/metrics/aggregators.py` (add `NullAggregator` sentinel class — never runs, signals "skip ParseMetricsStage")
 - Modify: `gigaevo/programs/stages/python_executors/execution.py` (add new stage class, add new `Box` alias, register)
 - Test: `tests/stages/test_parse_metrics_stage.py` (new file)
+- Test: `tests/test_metrics_aggregators.py` (append NullAggregator tests)
 
 The stage reads a `raw_validator_output` Box containing `(intrinsic_dict, artifact)` from `CallValidatorFunction`, calls `aggregator.aggregate(artifact["per_opp_metrics"], intrinsic)`, and emits the existing `validation_result` shape `(metrics_dict, artifact)` so downstream stages are unchanged.
 
-- [ ] **Step 1.1 (RED): write failing tests**
+`NullAggregator` is a sentinel subclass of `MetricsAggregator`. It is never actually *called* — the pipeline builder (Task 3) uses `isinstance(aggregator, NullAggregator)` to gate off ParseMetricsStage insertion entirely. This lets Hydra always resolve a concrete aggregator object (no null footgun) while letting non-Heilbron pipelines opt out cleanly via `aggregator=none`.
+
+- [ ] **Step 1.1a (RED): write NullAggregator tests**
+
+Append to `tests/test_metrics_aggregators.py`:
+
+```python
+class TestNullAggregator:
+    def test_is_metrics_aggregator_subclass(self):
+        from gigaevo.programs.metrics.aggregators import MetricsAggregator, NullAggregator
+        assert issubclass(NullAggregator, MetricsAggregator)
+
+    def test_output_keys_is_empty(self):
+        from gigaevo.programs.metrics.aggregators import NullAggregator
+        assert NullAggregator().output_keys == frozenset()
+
+    def test_aggregate_is_a_noop_returning_empty(self):
+        """NullAggregator is a sentinel — the builder gates on isinstance and
+        never actually calls it. But if something does call it, return {}."""
+        from gigaevo.programs.metrics.aggregators import NullAggregator
+        assert NullAggregator().aggregate([], {}) == {}
+        assert NullAggregator().aggregate([{"x": 1.0}], {"y": 2.0}) == {}
+```
+
+Run: `$GIGAEVO_PYTHON -m pytest tests/test_metrics_aggregators.py::TestNullAggregator -x --tb=short` → FAIL (no such class).
+
+- [ ] **Step 1.1b (GREEN): add NullAggregator**
+
+In `gigaevo/programs/metrics/aggregators.py`, after `ConfigurableAggregator`:
+
+```python
+class NullAggregator(MetricsAggregator):
+    """Sentinel 'no aggregator configured' marker.
+
+    The pipeline builder checks ``isinstance(aggregator, NullAggregator)``
+    and skips installing ParseMetricsStage when true — the DAG keeps the
+    legacy ``CallValidatorFunction → FetchMetrics`` edge, and evaluate.py's
+    old-contract ``metrics`` dict flows through unchanged.
+
+    This lets Hydra's ``aggregator=none`` default resolve to a real object
+    (no null footgun in ``${ref:aggregator}``) while preserving the
+    "non-Heilbron pipelines untouched" scope constraint.
+    """
+
+    @property
+    def output_keys(self) -> frozenset[str]:
+        return frozenset()
+
+    def aggregate(self, per_opp, intrinsic):
+        return {}
+```
+
+Add `"NullAggregator"` to `__all__`.
+
+Run: `$GIGAEVO_PYTHON -m pytest tests/test_metrics_aggregators.py::TestNullAggregator -x --tb=short` → PASS.
+
+Commit:
+```bash
+rtk git add gigaevo/programs/metrics/aggregators.py tests/test_metrics_aggregators.py
+rtk git commit -m "feat(metrics): NullAggregator sentinel — signals 'no aggregator configured'"
+```
+
+- [ ] **Step 1.1 (RED): write failing ParseMetricsStage tests**
 
 Create `tests/stages/test_parse_metrics_stage.py`:
 
@@ -369,13 +433,14 @@ def test_call_validator_feeds_parse_metrics_stage(dummy_d_builder):
     assert ("DGTrackerStage", "validation_result") in pm_outs
 
 
-def test_no_aggregator_preserves_legacy_dag(dummy_d_builder_no_aggregator):
-    """Builder without aggregator keeps legacy edges (non-Heilbron scope unchanged).
+def test_null_aggregator_preserves_legacy_dag(dummy_d_builder_null_aggregator):
+    """Builder with NullAggregator keeps legacy edges (non-Heilbron scope unchanged).
 
     CallValidatorFunction still feeds FetchMetrics / FetchArtifact / DGTrackerStage
-    directly; ParseMetricsStage is NOT present.
+    directly; ParseMetricsStage is NOT present. The `dummy_d_builder_null_aggregator`
+    fixture passes `aggregator=NullAggregator()`.
     """
-    blueprint = dummy_d_builder_no_aggregator.build()
+    blueprint = dummy_d_builder_null_aggregator.build()
     node_names = {n.name for n in blueprint.nodes}
     assert "ParseMetricsStage" not in node_names
     cv_dests = {(e.destination_stage, e.input_name) for e in blueprint.data_flow_edges if e.source_stage == "CallValidatorFunction"}
@@ -397,9 +462,9 @@ Expected: FAIL (no `ParseMetricsStage` in blueprint).
 
 In `gigaevo/adversarial/asymmetric_pipeline.py`:
 
-1. Add constructor kwarg `aggregator: MetricsAggregator | None = None` to `AdversarialAsymmetricPipelineBuilder.__init__`.
-2. **DO NOT raise when `aggregator is None`.** Non-Heilbron adversarial pipelines (e.g. `heilbron_adversarial`, `adversarial_coevo`) share this builder and don't wire an aggregator yet. Instead, **gate the ParseMetricsStage insertion**: when `aggregator is None`, leave the DAG exactly as before (CallValidatorFunction feeds FetchMetrics / FetchArtifact / DGTrackerStage directly). This preserves the "non-Heilbron pipelines unchanged" scope constraint from Q6.
-3. When `aggregator is not None`, in the method that assembles nodes/edges (likely `build()` or `_install_stages()`), insert:
+1. Add constructor kwarg `aggregator: MetricsAggregator` (required, but accepts `NullAggregator` as the "none configured" signal) to `AdversarialAsymmetricPipelineBuilder.__init__`. Do NOT default to None; Hydra always resolves `aggregator=none` to a `NullAggregator` instance.
+2. **Gate the ParseMetricsStage insertion on `isinstance(self._aggregator, NullAggregator)`.** Non-Heilbron adversarial pipelines (e.g. `heilbron_adversarial`, `adversarial_coevo`) get `aggregator=none` → `NullAggregator` → legacy DAG preserved. Heilbron_repro_v1 gets a real `ConfigurableAggregator` → ParseMetricsStage inserted. This preserves the "non-Heilbron pipelines unchanged" scope constraint from Q6.
+3. When `not isinstance(self._aggregator, NullAggregator)`, in the method that assembles nodes/edges (likely `build()` or `_install_stages()`), insert:
    - A new node `ParseMetricsStage` instantiated with `aggregator=self._aggregator`.
    - An edge `CallValidatorFunction → ParseMetricsStage` on `raw_validator_output`.
 4. For EVERY existing edge with `source_stage == "CallValidatorFunction"` (FetchMetrics, FetchArtifact, DGTrackerStage), rewrite it so `source_stage = "ParseMetricsStage"` (input_name `validation_result` unchanged).
@@ -464,12 +529,16 @@ rtk git commit -m "feat(adversarial): insert ParseMetricsStage between CallValid
 
 ---
 
-## Task 4: Hydra wiring — top-level `aggregator` singleton + `${ref:aggregator}` in pipeline
+## Task 4: Hydra wiring — `aggregator=none` default + `aggregator=heilbron_{improver,constructor}` overrides
 
 **Files:**
-- Modify: `config/pipeline/heilbron_repro_v1.yaml` ONLY (replace `defaults:` line for `heilbron_improver@pipeline_builder.lineage_filter.aggregator`; add `pipeline_builder.aggregator: ${ref:aggregator}`; add `pipeline_builder.lineage_filter.aggregator: ${ref:aggregator}`)
-- Do NOT modify `config/pipeline/adversarial_asymmetric.yaml` — `heilbron_adversarial` and other adversarial tasks that inherit from it must stay aggregator-less (Q6: non-Heilbron unchanged; Task 3 builder change makes aggregator optional so those pipelines keep the legacy DAG).
-- Test: `tests/entrypoint/test_aggregator_hydra_wiring.py` — add Hydra compose tests asserting `pipeline_builder.aggregator` and `pipeline_builder.lineage_filter.aggregator` both resolve to the SAME singleton object for heilbron_repro_v1, AND that `heilbron_adversarial` still composes without an aggregator.
+- Create: `config/aggregator/none.yaml` (NullAggregator sentinel; default for every config)
+- Modify: `config/config.yaml` (add `- aggregator: none` to defaults list, alongside `memory: none`, `ideas_tracker: none`)
+- Modify: `config/pipeline/heilbron_repro_v1.yaml` (add `pipeline_builder.aggregator: ${ref:aggregator}` and `pipeline_builder.lineage_filter.aggregator: ${ref:aggregator}`; REMOVE the existing `- /aggregator/heilbron_improver@pipeline_builder.lineage_filter.aggregator` targeted default)
+- Do NOT modify `config/pipeline/adversarial_asymmetric.yaml`. `heilbron_adversarial` and other adversarial tasks that inherit from it get `aggregator=none` automatically from the top-level default → `NullAggregator` → legacy DAG preserved.
+- Test: `tests/entrypoint/test_aggregator_hydra_wiring.py` — Hydra compose tests asserting (a) default is NullAggregator, (b) `aggregator=heilbron_improver` and `aggregator=heilbron_constructor` override cleanly without the `+` prefix, (c) heilbron_repro_v1 + `aggregator=heilbron_improver` resolves both pipeline_builder.aggregator and pipeline_builder.lineage_filter.aggregator to the SAME singleton, (d) heilbron_adversarial still composes cleanly with the default NullAggregator.
+
+**Key decision**: `aggregator=` (regular override), NOT `+aggregator=` (add-new-key). Enabled by making it a real Hydra config group with a `none` default at the top-level `config.yaml`. Launch syntax stays clean: `aggregator=heilbron_improver`.
 
 Decision recap (Q3): D and G need different aggregators. We achieve this by making the top-level `aggregator` a Hydra group: `config/aggregator/heilbron_improver.yaml` for D runs, `config/aggregator/heilbron_constructor.yaml` for G runs. The launch command picks it via `+aggregator=heilbron_improver` (D) / `+aggregator=heilbron_constructor` (G).
 
@@ -480,14 +549,12 @@ The pipeline config references the top-level via `${ref:aggregator}` for BOTH `p
 Create `tests/entrypoint/test_aggregator_hydra_wiring.py`:
 
 ```python
-"""Hydra composition test — the top-level `aggregator` singleton is shared
-by ParseMetricsStage and SBF-Lineage in heilbron_repro_v1."""
+"""Hydra composition test — aggregator group with `none` default + per-role overrides."""
 
 from __future__ import annotations
 
 import pytest
 from hydra import compose, initialize_config_dir
-from omegaconf import OmegaConf
 from pathlib import Path
 
 CONFIG_DIR = str(Path(__file__).resolve().parents[2] / "config")
@@ -498,10 +565,25 @@ def _compose(overrides):
         return compose(config_name="config", overrides=overrides)
 
 
-def test_heilbron_repro_v1_d_has_improver_aggregator():
+def test_default_aggregator_is_null():
+    """Top-level default resolves to NullAggregator — no Heilbron pipeline needed."""
+    cfg = _compose([
+        "pipeline=adversarial_asymmetric",
+        "problem.name=heilbron_adversarial/pop_b",
+        "redis.db=0",
+        "opponent_redis_db=1",
+        "opponent_redis_prefix=heilbron_adversarial/pop_a",
+        "population_role=improver",
+        "feedback_mode=composition",
+    ])
+    assert cfg.aggregator._target_.endswith("NullAggregator")
+
+
+def test_heilbron_repro_v1_d_uses_regular_override_not_plus_prefix():
+    """aggregator= (no + prefix) — because `aggregator: none` is in defaults."""
     cfg = _compose([
         "pipeline=heilbron_repro_v1",
-        "+aggregator=heilbron_improver",
+        "aggregator=heilbron_improver",  # NO '+' prefix
         "problem.name=heilbron_repro_v1/pop_b",
         "redis.db=0",
         "opponent_redis_db=1",
@@ -509,20 +591,17 @@ def test_heilbron_repro_v1_d_has_improver_aggregator():
         "population_role=improver",
         "feedback_mode=composition",
     ])
-    # Top-level aggregator resolves
     assert cfg.aggregator._target_.endswith("ConfigurableAggregator")
-    # ParseMetricsStage wiring picks up the same singleton via ${ref:}
+    # ${ref:aggregator} resolves the SAME singleton into both slots
     assert cfg.pipeline_builder.aggregator._target_ == cfg.aggregator._target_
-    # SBF-Lineage still gets it on D
     assert cfg.pipeline_builder.lineage_filter.aggregator._target_ == cfg.aggregator._target_
-    # improver YAML has specific output set
     assert "mean_improvement_raw" in cfg.aggregator.outputs
 
 
-def test_heilbron_repro_v1_g_has_constructor_aggregator():
+def test_heilbron_repro_v1_g_uses_constructor_aggregator():
     cfg = _compose([
         "pipeline=heilbron_repro_v1",
-        "+aggregator=heilbron_constructor",
+        "aggregator=heilbron_constructor",
         "problem.name=heilbron_repro_v1/pop_a",
         "redis.db=1",
         "opponent_redis_db=0",
@@ -534,10 +613,8 @@ def test_heilbron_repro_v1_g_has_constructor_aggregator():
     assert cfg.pipeline_builder.aggregator._target_ == cfg.aggregator._target_
 
 
-def test_heilbron_adversarial_still_composes_without_aggregator():
-    """Scope guard: heilbron_adversarial inherits from adversarial_asymmetric and
-    does NOT wire an aggregator. Must continue to compose cleanly (ParseMetricsStage
-    is gated off in the builder when aggregator is None)."""
+def test_heilbron_adversarial_inherits_null_default():
+    """heilbron_adversarial doesn't set aggregator — stays NullAggregator → legacy DAG."""
     cfg = _compose([
         "pipeline=adversarial_asymmetric",
         "problem.name=heilbron_adversarial/pop_b",
@@ -547,19 +624,24 @@ def test_heilbron_adversarial_still_composes_without_aggregator():
         "population_role=improver",
         "feedback_mode=composition",
     ])
-    # No top-level aggregator key present
-    assert "aggregator" not in cfg or cfg.get("aggregator") is None
+    assert cfg.aggregator._target_.endswith("NullAggregator")
 
 
-def test_missing_aggregator_on_heilbron_repro_v1_explicit_error():
-    """heilbron_repro_v1 pipeline REQUIRES +aggregator=... — fail loud on omission."""
-    with pytest.raises(Exception, match="(aggregator|ref)"):
-        _compose([
-            "pipeline=heilbron_repro_v1",
-            # NO +aggregator override
-            "problem.name=heilbron_repro_v1/pop_b",
-            "redis.db=0",
-        ])
+def test_heilbron_repro_v1_without_aggregator_override_is_null():
+    """heilbron_repro_v1 without `aggregator=...` override gets NullAggregator.
+    The builder's isinstance(NullAggregator) check will skip ParseMetricsStage —
+    a valid (if silent) configuration. Launch scripts MUST set aggregator=... to
+    opt in. (Preflight contract checks in experiment.yaml catch missing overrides.)"""
+    cfg = _compose([
+        "pipeline=heilbron_repro_v1",
+        "problem.name=heilbron_repro_v1/pop_b",
+        "redis.db=0",
+        "opponent_redis_db=1",
+        "opponent_redis_prefix=heilbron_repro_v1/pop_a",
+        "population_role=improver",
+        "feedback_mode=composition",
+    ])
+    assert cfg.aggregator._target_.endswith("NullAggregator")
 ```
 
 - [ ] **Step 4.2: run test to confirm RED**
@@ -570,7 +652,27 @@ $GIGAEVO_PYTHON -m pytest tests/entrypoint/test_aggregator_hydra_wiring.py -x --
 
 Expected: fail with `pipeline_builder.aggregator` not found or `${ref:aggregator}` unresolved.
 
-- [ ] **Step 4.3 (GREEN): update `heilbron_repro_v1.yaml` only**
+- [ ] **Step 4.3a (GREEN): create `config/aggregator/none.yaml`**
+
+```yaml
+# @package _global_
+# Null-object aggregator. Sentinel that the pipeline builder recognizes via
+# isinstance(aggregator, NullAggregator) and treats as 'no aggregator wired —
+# use legacy CallValidatorFunction → FetchMetrics DAG'. Default for every
+# run; override with `aggregator=heilbron_improver` (etc.) to opt in.
+aggregator:
+  _target_: gigaevo.programs.metrics.aggregators.NullAggregator
+```
+
+- [ ] **Step 4.3b (GREEN): add `aggregator: none` to top-level defaults**
+
+In `config/config.yaml`, add to the `defaults:` list (alongside `memory: none`):
+
+```yaml
+  - aggregator: none         # NullAggregator; override with aggregator=heilbron_improver|heilbron_constructor
+```
+
+- [ ] **Step 4.3c (GREEN): update `heilbron_repro_v1.yaml`**
 
 In `config/pipeline/heilbron_repro_v1.yaml`:
 
@@ -586,6 +688,8 @@ In `config/pipeline/heilbron_repro_v1.yaml`:
      # Aggregator singleton composing program.metrics from per-opp primitives.
      # The same singleton is shared by ParseMetricsStage (program.metrics) and
      # SBF-Lineage (shared-subset TransitionEvidence metrics) — drift impossible.
+     # Top-level default is NullAggregator; launch must pass
+     # `aggregator=heilbron_improver` (D) or `aggregator=heilbron_constructor` (G).
      aggregator: ${ref:aggregator}
      lineage_filter:
        _target_: gigaevo.adversarial.asymmetric_pipeline.LineageFilterConfig
@@ -594,23 +698,23 @@ In `config/pipeline/heilbron_repro_v1.yaml`:
        aggregator: ${ref:aggregator}
    ```
 
-Note: `heilbron_repro_v1.yaml` does NOT select a default aggregator — the launcher picks `+aggregator=heilbron_improver` (D) or `+aggregator=heilbron_constructor` (G) per role. This mirrors how `population_role` is injected per-run. `config/pipeline/adversarial_asymmetric.yaml` stays untouched so `heilbron_adversarial` keeps the legacy DAG.
+Note: `heilbron_repro_v1.yaml` does NOT select a default aggregator (that would force the D aggregator onto G runs). Per-run launch script picks `aggregator=heilbron_improver` (D) or `aggregator=heilbron_constructor` (G). `config/pipeline/adversarial_asymmetric.yaml` stays untouched so `heilbron_adversarial` inherits the top-level `aggregator=none` default and keeps the legacy DAG.
 
 - [ ] **Step 4.4: verify with `--cfg job` for both roles**
 
 ```bash
-$GIGAEVO_PYTHON run.py --cfg job pipeline=heilbron_repro_v1 +aggregator=heilbron_improver \
+$GIGAEVO_PYTHON run.py --cfg job pipeline=heilbron_repro_v1 aggregator=heilbron_improver \
   problem.name=heilbron_repro_v1/pop_b redis.db=0 opponent_redis_db=1 \
   opponent_redis_prefix=heilbron_repro_v1/pop_a population_role=improver \
   feedback_mode=composition 2>&1 | grep -A2 "^aggregator:\|pipeline_builder.aggregator:" | head -20
 
-$GIGAEVO_PYTHON run.py --cfg job pipeline=heilbron_repro_v1 +aggregator=heilbron_constructor \
+$GIGAEVO_PYTHON run.py --cfg job pipeline=heilbron_repro_v1 aggregator=heilbron_constructor \
   problem.name=heilbron_repro_v1/pop_a redis.db=1 opponent_redis_db=0 \
   opponent_redis_prefix=heilbron_repro_v1/pop_b population_role=constructor \
   feedback_mode=composition 2>&1 | grep -A2 "^aggregator:\|pipeline_builder.aggregator:" | head -20
 ```
 
-Expected: both resolve; `aggregator.outputs` differ between the two.
+Expected: both resolve; `aggregator.outputs` differ between the two. NOTE the regular `aggregator=...` override (no `+` prefix).
 
 - [ ] **Step 4.5: run the Hydra compose tests to confirm GREEN**
 
@@ -623,8 +727,8 @@ Expected: 3 passed.
 - [ ] **Step 4.6: commit**
 
 ```bash
-rtk git add config/pipeline/heilbron_repro_v1.yaml config/pipeline/adversarial_asymmetric.yaml tests/entrypoint/test_aggregator_hydra_wiring.py
-rtk git commit -m "feat(config): top-level aggregator singleton shared by ParseMetrics + SBF-Lineage"
+rtk git add config/aggregator/none.yaml config/config.yaml config/pipeline/heilbron_repro_v1.yaml tests/entrypoint/test_aggregator_hydra_wiring.py
+rtk git commit -m "feat(config): aggregator=none default + ${ref:aggregator} singleton wiring"
 ```
 
 ---
@@ -901,13 +1005,14 @@ rtk git commit -m "feat(heilbron/pop_a): evaluate.py returns (intrinsic={quality
 
 ---
 
-## Task 7: Launch-script update for `+aggregator=` override
+## Task 7: Launch-script update for `aggregator=...` override
 
 **Files:**
 - Modify: `experiments/heilbron/adversarial-repro-v2/launch.sh` (or equivalent)
 - Modify: `experiments/heilbron/adversarial-repro-v2/cfg_run_*.yaml` (if they carry extra_overrides)
+- Modify: `experiments/heilbron/adversarial-repro-v2/experiment.yaml` (`contract.config.extra` block — add `aggregator: heilbron_improver` for D runs, `aggregator: heilbron_constructor` for G runs, per the preflight contract)
 
-D runs: `+aggregator=heilbron_improver`. G runs: `+aggregator=heilbron_constructor`. Added to `extra_overrides` for every cfg_run.
+D runs: `aggregator=heilbron_improver`. G runs: `aggregator=heilbron_constructor`. Regular override (no `+` prefix) because the top-level default is `aggregator=none`.
 
 - [ ] **Step 7.1: grep for launch paths**
 
@@ -916,29 +1021,38 @@ rtk git grep -l "opponent_redis_db" experiments/heilbron/adversarial-repro-v2/
 ls experiments/heilbron/adversarial-repro-v2/cfg_run_*.yaml 2>/dev/null
 ```
 
-- [ ] **Step 7.2: add `+aggregator=` override**
+- [ ] **Step 7.2: add `aggregator=` override**
 
 For each `cfg_run_*_G*.yaml`, append to `extra_overrides`:
 
 ```yaml
-- "+aggregator=heilbron_constructor"
+- "aggregator=heilbron_constructor"
 ```
 
 For each `cfg_run_*_D*.yaml`, append:
 
 ```yaml
-- "+aggregator=heilbron_improver"
+- "aggregator=heilbron_improver"
+```
+
+For `experiment.yaml`, add to `contract.config.extra` (document the invariant) — note this is a per-run override; experiment.yaml may only carry one value, so pin the D value (since heilbron_repro_v1 is the D-replication target) and let individual cfg_run files override:
+
+```yaml
+contract:
+  config:
+    extra:
+      aggregator: heilbron_improver  # pinned; G cfg_run files override to heilbron_constructor
 ```
 
 - [ ] **Step 7.3: dry-run preview**
 
-For one D cfg and one G cfg, run `--cfg job` preview and grep for `aggregator:`. Expected: non-empty, correct outputs set.
+For one D cfg and one G cfg, run `--cfg job` preview and grep for `aggregator:`. Expected: non-empty, correct outputs set — and aggregator._target_ is `ConfigurableAggregator` (not `NullAggregator`).
 
 - [ ] **Step 7.4: commit**
 
 ```bash
 rtk git add experiments/heilbron/adversarial-repro-v2/
-rtk git commit -m "feat(v2): inject +aggregator=heilbron_{improver,constructor} per role"
+rtk git commit -m "feat(v2): set aggregator=heilbron_{improver,constructor} per role"
 ```
 
 ---
