@@ -540,7 +540,7 @@ rtk git commit -m "feat(adversarial): insert ParseMetricsStage between CallValid
 
 **Key decision**: `aggregator=` (regular override), NOT `+aggregator=` (add-new-key). Enabled by making it a real Hydra config group with a `none` default at the top-level `config.yaml`. Launch syntax stays clean: `aggregator=heilbron_improver`.
 
-Decision recap (Q3): D and G need different aggregators. We achieve this by making the top-level `aggregator` a Hydra group: `config/aggregator/heilbron_improver.yaml` for D runs, `config/aggregator/heilbron_constructor.yaml` for G runs. The launch command picks it via `+aggregator=heilbron_improver` (D) / `+aggregator=heilbron_constructor` (G).
+Decision recap (Q3): D and G need different aggregators. We achieve this by making the top-level `aggregator` a Hydra group: `config/aggregator/heilbron_improver.yaml` for D runs, `config/aggregator/heilbron_constructor.yaml` for G runs. The launch command picks it via `aggregator=heilbron_improver` (D) / `aggregator=heilbron_constructor` (G) — regular override, no `+` prefix, because the top-level default is `aggregator=none`.
 
 The pipeline config references the top-level via `${ref:aggregator}` for BOTH `pipeline_builder.aggregator` (for ParseMetricsStage) and `pipeline_builder.lineage_filter.aggregator` (for SBF-Lineage, D-only). The same singleton is shared across the two references.
 
@@ -792,7 +792,7 @@ FIXTURE = {
 def test_pop_b_improver_golden_vector():
     with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
         cfg = compose(config_name="config", overrides=[
-            "+aggregator=heilbron_improver",
+            "aggregator=heilbron_improver",
             "problem.name=heilbron_repro_v1/pop_b",
             "redis.db=0",
         ])
@@ -819,7 +819,7 @@ def test_pop_b_schema_existence():
     declared = set(yaml.safe_load(metrics_yaml.read_text())["metrics"].keys())
     with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
         cfg = compose(config_name="config", overrides=[
-            "+aggregator=heilbron_improver",
+            "aggregator=heilbron_improver",
             "problem.name=heilbron_repro_v1/pop_b",
             "redis.db=0",
         ])
@@ -931,7 +931,7 @@ EXPECTED = {
 def test_pop_a_constructor_golden_vector():
     with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
         cfg = compose(config_name="config", overrides=[
-            "+aggregator=heilbron_constructor",
+            "aggregator=heilbron_constructor",
             "problem.name=heilbron_repro_v1/pop_a",
             "redis.db=1",
         ])
@@ -953,7 +953,7 @@ def test_pop_a_schema_existence():
     declared = set(yaml.safe_load(metrics_yaml.read_text())["metrics"].keys())
     with initialize_config_dir(config_dir=CONFIG_DIR, version_base=None):
         cfg = compose(config_name="config", overrides=[
-            "+aggregator=heilbron_constructor",
+            "aggregator=heilbron_constructor",
             "problem.name=heilbron_repro_v1/pop_a",
             "redis.db=1",
         ])
@@ -1074,7 +1074,7 @@ gigaevo flush --db 15 --confirm
 cd experiments/heilbron/adversarial-repro-v2
 $GIGAEVO_PYTHON ../../../run.py \
   pipeline=heilbron_repro_v1 \
-  +aggregator=heilbron_improver \
+  aggregator=heilbron_improver \
   problem.name=heilbron_repro_v1/pop_b \
   redis.db=14 \
   opponent_redis_db=15 \
@@ -1092,7 +1092,7 @@ SMOKE_D_PID=$!
 ```bash
 $GIGAEVO_PYTHON ../../../run.py \
   pipeline=heilbron_repro_v1 \
-  +aggregator=heilbron_constructor \
+  aggregator=heilbron_constructor \
   problem.name=heilbron_repro_v1/pop_a \
   redis.db=15 \
   opponent_redis_db=14 \
