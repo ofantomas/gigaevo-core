@@ -11,6 +11,7 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_openai import ChatOpenAI
+from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 from loguru import logger
 
@@ -34,14 +35,21 @@ def _remember_selected_model(model_name: str) -> None:
 
 
 def _create_langfuse_handler() -> CallbackHandler | None:
-    """Create Langfuse handler if credentials are configured."""
+    """Create Langfuse handler if credentials are configured.
+
+    On langfuse>=4.0 the ``LangchainCallbackHandler`` no longer exposes the
+    underlying client; flush settings must be passed to the ``Langfuse``
+    constructor (or via env vars). We initialize the singleton with
+    ``flush_at=1`` / ``flush_interval=1`` so traces appear in near-real time
+    instead of being batched (5s / 512 spans by default), then construct the
+    handler which picks up the same singleton via ``get_client()``.
+    """
     if not (os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")):
         return None
 
+    Langfuse(flush_at=1, flush_interval=1)
     handler = CallbackHandler()
-    handler.client.flush_at = 1  # type: ignore[attr-defined]
-    handler.client.flush_interval = 1  # type: ignore[attr-defined]
-    logger.info("[MultiModelRouter] Langfuse tracing enabled")
+    logger.info("[MultiModelRouter] Langfuse tracing enabled (flush_at=1, flush_interval=1)")
     return handler
 
 
