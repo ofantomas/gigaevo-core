@@ -242,8 +242,15 @@ class BanditModelRouter(MultiModelRouter):
         window_size: int = 100,
         fitness_key: str,
         higher_is_better: bool = True,
+        structured_output_method: str | None = None,
     ):
-        super().__init__(models, probabilities, writer=writer, name=name)
+        super().__init__(
+            models,
+            probabilities,
+            writer=writer,
+            name=name,
+            structured_output_method=structured_output_method,
+        )
         self.fitness_key = fitness_key
         self.higher_is_better = higher_is_better
         self._bandit = SlidingWindowUCB1(
@@ -342,6 +349,8 @@ class BanditModelRouter(MultiModelRouter):
 
     def with_structured_output(self, schema: Any, **kwargs) -> _StructuredOutputRouter:
         """Create a structured-output router that delegates selection to the bandit."""
+        if self._structured_output_method is not None and "method" not in kwargs:
+            kwargs["method"] = self._structured_output_method
         wrapped = [
             m.with_structured_output(schema, include_raw=True, **kwargs)
             for m in self.models

@@ -86,6 +86,7 @@ class MultiModelRouter(Runnable):
         probabilities: list[float],
         writer: LogWriter | None = None,
         name: str = "default",
+        structured_output_method: str | None = None,
     ):
         if len(models) != len(probabilities):
             raise ValueError(
@@ -99,6 +100,7 @@ class MultiModelRouter(Runnable):
         self.probabilities = [p / sum(probabilities) for p in probabilities]
         self._task_model_map: dict[int, str] = {}
         self._name = name
+        self._structured_output_method = structured_output_method
 
         self._tracker = TokenTracker(
             name=name,
@@ -252,6 +254,8 @@ class MultiModelRouter(Runnable):
 
     def with_structured_output(self, schema: Any, **kwargs) -> _StructuredOutputRouter:
         """Create a router that returns parsed Pydantic models with token tracking."""
+        if self._structured_output_method is not None and "method" not in kwargs:
+            kwargs["method"] = self._structured_output_method
         wrapped = [
             m.with_structured_output(schema, include_raw=True, **kwargs)
             for m in self.models
