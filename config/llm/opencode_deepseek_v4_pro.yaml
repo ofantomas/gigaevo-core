@@ -6,7 +6,7 @@
 llm:
   _target_: gigaevo.llm.models.MultiModelRouter
   _convert_: all
-  structured_output_method: json_mode
+  structured_output_method: json_schema
   models:
     - _target_: langchain_openai.ChatOpenAI
       model: deepseek/deepseek-v4-pro
