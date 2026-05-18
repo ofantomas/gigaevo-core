@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 import diffpatch
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -229,6 +230,42 @@ class MutationAgent(LangGraphAgent):
         result["prompt_id"] = final_state.get("prompt_id")
         return result
 
+    def _llm_run_config(self, state: MutationState) -> RunnableConfig:
+        """Build tracing config for the mutation structured LLM call."""
+        parents = state.get("input", [])
+        parent_ids = [p.id for p in parents]
+        parent_short_ids = [p.short_id for p in parents]
+        prompt_id = state.get("prompt_id") or "fixed"
+        mutation_mode = state["mutation_mode"]
+
+        tags = [
+            "MutationStage",
+            "MutationAgent",
+            f"mutation_mode:{mutation_mode}",
+            f"prompt:{prompt_id}",
+        ]
+        parent_fragment = ",".join(parent_short_ids) or "no-parents"
+        session_id = f"mutation:{mutation_mode}:{parent_fragment}"[:200]
+
+        metadata: dict[str, Any] = {
+            "stage": "MutationStage",
+            "agent": "MutationAgent",
+            "mutation_mode": mutation_mode,
+            "parent_count": len(parents),
+            "parent_ids": parent_ids,
+            "parent_short_ids": parent_short_ids,
+            "prompt_id": prompt_id,
+            # Langfuse's LangChain handler reads these trace attributes from metadata.
+            "langfuse_session_id": session_id,
+            "langfuse_tags": tags,
+        }
+
+        return {
+            "run_name": "MutationStage",
+            "tags": tags,
+            "metadata": metadata,
+        }
+
     async def acall_llm(self, state: MutationState) -> MutationState:
         """Call LLM with structured output.
 
@@ -242,7 +279,10 @@ class MutationAgent(LangGraphAgent):
         """
         structured_response: Any = None
         try:
-            structured_response = await self.structured_llm.ainvoke(state["messages"])
+            structured_response = await self.structured_llm.ainvoke(
+                state["messages"],
+                config=self._llm_run_config(state),
+            )
             state["llm_response"] = structured_response
             state["structured_output"] = structured_response
             if "metadata" not in state:

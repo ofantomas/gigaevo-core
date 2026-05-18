@@ -349,7 +349,33 @@ class TestAcallLlm:
 
         await agent.acall_llm(state)
 
-        agent.structured_llm.ainvoke.assert_awaited_once_with(msgs)
+        agent.structured_llm.ainvoke.assert_awaited_once()
+        args, kwargs = agent.structured_llm.ainvoke.await_args
+        assert args == (msgs,)
+        assert kwargs["config"]["run_name"] == "MutationStage"
+
+    @pytest.mark.asyncio
+    async def test_success_adds_langfuse_trace_config(self):
+        """acall_llm names and tags mutation calls for Langfuse tracing."""
+        agent = _make_agent()
+        expected = _make_structured_output()
+        agent.structured_llm = MagicMock()
+        agent.structured_llm.ainvoke = AsyncMock(return_value=expected)
+
+        from langchain_core.messages import HumanMessage
+
+        parent = _make_program()
+        state = _make_state(parents=[parent], prompt_id="prompt-123")
+        state["messages"] = [HumanMessage(content="test")]
+
+        await agent.acall_llm(state)
+
+        config = agent.structured_llm.ainvoke.await_args.kwargs["config"]
+        assert config["run_name"] == "MutationStage"
+        assert "MutationStage" in config["tags"]
+        assert config["metadata"]["langfuse_session_id"].startswith("mutation:rewrite:")
+        assert config["metadata"]["langfuse_tags"] == config["tags"]
+        assert config["metadata"]["parent_ids"] == [parent.id]
 
     @pytest.mark.asyncio
     async def test_exception_sets_error(self):
