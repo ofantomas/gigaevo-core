@@ -355,8 +355,11 @@ class TestAcallLlm:
         assert kwargs["config"]["run_name"] == "MutationStage"
 
     @pytest.mark.asyncio
-    async def test_success_adds_langfuse_trace_config(self):
+    async def test_success_adds_langfuse_trace_config(self, monkeypatch):
         """acall_llm names and tags mutation calls for Langfuse tracing."""
+        monkeypatch.delenv("LANGFUSE_SESSION_ID", raising=False)
+        monkeypatch.delenv("LANGFUSE_TAGS", raising=False)
+
         agent = _make_agent()
         expected = _make_structured_output()
         agent.structured_llm = MagicMock()
@@ -376,6 +379,33 @@ class TestAcallLlm:
         assert config["metadata"]["langfuse_session_id"].startswith("mutation:rewrite:")
         assert config["metadata"]["langfuse_tags"] == config["tags"]
         assert config["metadata"]["parent_ids"] == [parent.id]
+
+    @pytest.mark.asyncio
+    async def test_success_preserves_langfuse_env_trace_config(self, monkeypatch):
+        """acall_llm preserves launch-level Langfuse session and tags."""
+        monkeypatch.setenv("LANGFUSE_SESSION_ID", "launch-session")
+        monkeypatch.setenv("LANGFUSE_TAGS", "run-tag,MutationStage,prod,,run-tag")
+
+        agent = _make_agent()
+        expected = _make_structured_output()
+        agent.structured_llm = MagicMock()
+        agent.structured_llm.ainvoke = AsyncMock(return_value=expected)
+
+        from langchain_core.messages import HumanMessage
+
+        parent = _make_program()
+        state = _make_state(parents=[parent], prompt_id="prompt-123")
+        state["messages"] = [HumanMessage(content="test")]
+
+        await agent.acall_llm(state)
+
+        config = agent.structured_llm.ainvoke.await_args.kwargs["config"]
+        tags = config["tags"]
+        assert config["metadata"]["langfuse_session_id"] == "launch-session"
+        assert tags == config["metadata"]["langfuse_tags"]
+        assert tags.count("MutationStage") == 1
+        assert tags.count("run-tag") == 1
+        assert set(tags) >= {"MutationStage", "MutationAgent", "run-tag", "prod"}
 
     @pytest.mark.asyncio
     async def test_exception_sets_error(self):

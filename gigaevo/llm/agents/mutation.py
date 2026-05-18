@@ -238,14 +238,22 @@ class MutationAgent(LangGraphAgent):
         prompt_id = state.get("prompt_id") or "fixed"
         mutation_mode = state["mutation_mode"]
 
-        tags = [
+        mutation_tags = [
             "MutationStage",
             "MutationAgent",
             f"mutation_mode:{mutation_mode}",
             f"prompt:{prompt_id}",
         ]
+        env_tags = [
+            tag.strip()
+            for tag in os.environ.get("LANGFUSE_TAGS", "").split(",")
+            if tag.strip()
+        ]
+        tags = list(dict.fromkeys([*env_tags, *mutation_tags]))
+
         parent_fragment = ",".join(parent_short_ids) or "no-parents"
-        session_id = f"mutation:{mutation_mode}:{parent_fragment}"[:200]
+        synthetic_session_id = f"mutation:{mutation_mode}:{parent_fragment}"[:200]
+        session_id = os.environ.get("LANGFUSE_SESSION_ID") or synthetic_session_id
 
         metadata: dict[str, Any] = {
             "stage": "MutationStage",
