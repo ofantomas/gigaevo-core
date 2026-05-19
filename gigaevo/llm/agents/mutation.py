@@ -142,6 +142,17 @@ class MutationState(TypedDict):
     error: NotRequired[str]
 
 
+def _langfuse_metadata_value(value: Any, max_len: int = 200) -> str:
+    """Return a string value acceptable for Langfuse propagated metadata."""
+    if isinstance(value, (list, tuple, set)):
+        text = ",".join(str(item) for item in value)
+    else:
+        text = str(value)
+    if len(text) <= max_len:
+        return text
+    return f"{text[: max_len - 3]}..."
+
+
 class MutationAgent(LangGraphAgent):
     """Agent for LLM-based code mutation.
 
@@ -299,10 +310,10 @@ class MutationAgent(LangGraphAgent):
             "stage": "MutationStage",
             "agent": "MutationAgent",
             "mutation_mode": mutation_mode,
-            "parent_count": len(parents),
-            "parent_ids": parent_ids,
-            "parent_short_ids": parent_short_ids,
-            "prompt_id": prompt_id,
+            "parent_count": _langfuse_metadata_value(len(parents)),
+            "parent_ids": _langfuse_metadata_value(parent_ids),
+            "parent_short_ids": _langfuse_metadata_value(parent_short_ids),
+            "prompt_id": _langfuse_metadata_value(prompt_id),
             # Langfuse's LangChain handler reads these trace attributes from metadata.
             "langfuse_session_id": session_id,
             "langfuse_tags": tags,
