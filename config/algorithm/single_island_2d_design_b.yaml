@@ -1,0 +1,61 @@
+# @package _global_
+
+defaults:
+  - _base
+
+# Full-Sella Design B MAP-Elites:
+# primary fitness (mean_rel_steps, lower is better) x mean_rel_energy.
+# The energy axis keeps valid high-energy-recovery optimizers visible while
+# selection and replacement stay primary-fitness driven.
+
+island_max_size: 300
+
+behavior_space:
+  _target_: gigaevo.config.helpers.build_behavior_space
+  keys:
+    - ${primary_key}
+    - mean_rel_energy
+  bounds:
+    - [0.8, 1.5]
+    - [0.999, 1.05]
+  resolutions:
+    - 40
+    - 10
+  binning_types:
+    - linear
+    - linear
+  dynamic: true
+  expansion_buffer_ratio: 0.1
+
+islands:
+  - _target_: gigaevo.evolution.strategies.map_elites.IslandConfig
+    island_id: ${island_id}
+    max_size: ${island_max_size}
+    behavior_space: ${behavior_space}
+    archive_selector:
+      _target_: gigaevo.evolution.strategies.map_elites.SumArchiveSelector
+      fitness_keys:
+        - ${primary_key}
+      fitness_key_higher_is_better:
+        - ${higher_is_better}
+    elite_selector:
+      _target_: gigaevo.evolution.strategies.map_elites.FitnessProportionalEliteSelector
+      fitness_key: ${primary_key}
+      fitness_key_higher_is_better: ${higher_is_better}
+    archive_remover:
+      _target_: gigaevo.evolution.strategies.map_elites.FitnessArchiveRemover
+      fitness_key: ${primary_key}
+      fitness_key_higher_is_better: ${higher_is_better}
+    migrant_selector:
+      _target_: gigaevo.evolution.strategies.map_elites.TopFitnessMigrantSelector
+      fitness_key: ${primary_key}
+      fitness_key_higher_is_better: ${higher_is_better}
+    migration_rate: ${migration_rate}
+
+evolution_strategy:
+  _target_: gigaevo.evolution.strategies.map_elites.MapElitesMultiIsland
+  island_configs: ${islands}
+  program_storage: ${ref:redis_storage}
+  migration_interval: ${migration_interval}
+  enable_migration: ${enable_migration}
+  max_migrants_per_island: ${max_migrants_per_island}
