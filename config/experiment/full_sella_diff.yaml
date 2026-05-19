@@ -1,8 +1,6 @@
 # @package _global_
 
 # Full Sella evolution with SEARCH/REPLACE diff mutations and Design B MAP-Elites.
-# This preset keeps run placement outside the config: pass problem.dir and redis.db
-# at launch time for the target cluster/worktree.
 
 defaults:
   - /constants: base
@@ -23,3 +21,7 @@ mutation_mode: diff
 num_parents: 1
 max_code_length: 200000
 max_generations: null
+
+problem:
+  name: full_sella_diff
+  dir: /home/tsypin/opt_problem
