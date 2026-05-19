@@ -21,6 +21,7 @@ mutation_mode: diff
 num_parents: 1
 max_code_length: 200000
 max_generations: null
+max_concurrent_dags: 5
 
 problem:
   name: full_sella_diff
