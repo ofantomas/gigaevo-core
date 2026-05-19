@@ -1,0 +1,25 @@
+# @package _global_
+
+# Full Sella evolution with SEARCH/REPLACE diff mutations and Design B MAP-Elites.
+# This preset keeps run placement outside the config: pass problem.dir and redis.db
+# at launch time for the target cluster/worktree.
+
+defaults:
+  - /constants: base
+  - /redis: default
+  - /llm: opencode_deepseek_v4_pro
+  - /prompts: default
+  - /prompt_fetcher: fixed
+  - /evolution: steady_state
+  - /algorithm: single_island_2d_design_b
+  - /pipeline: auto
+  - /runner: default
+  - /scheduling: fifo
+  - /loader: directory
+  - /logging: tensorboard
+  - /metrics: default
+
+mutation_mode: diff
+num_parents: 1
+max_code_length: 200000
+max_generations: null
