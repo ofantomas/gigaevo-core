@@ -197,10 +197,11 @@ def _reconstruct_archive(df: pd.DataFrame, spec: GridSpec) -> pd.DataFrame:
 def _build_grid(records: pd.DataFrame, spec: GridSpec) -> np.ndarray:
     grid = np.full((spec.y_bins, spec.x_bins), np.nan, dtype=float)
     for _, row in records.iterrows():
-        ix = int(row["cell_x"])
-        iy = int(row["cell_y"])
+        x = float(row["x"])
+        y = float(row["y"])
         fitness = float(row["fitness"])
-        if 0 <= ix < spec.x_bins and 0 <= iy < spec.y_bins and np.isfinite(fitness):
+        if np.isfinite(x) and np.isfinite(y) and np.isfinite(fitness):
+            ix, iy = _cell_for_metrics(x, y, spec)
             current = grid[iy, ix]
             if _is_better(fitness, current, spec.minimize):
                 grid[iy, ix] = fitness
@@ -253,6 +254,7 @@ def plot_map_grid(
     grid = _build_grid(records, spec)
     occupied = int(np.isfinite(grid).sum())
     total_cells = spec.x_bins * spec.y_bins
+    archive_elites = len(records)
 
     cmap = plt.get_cmap("viridis_r" if spec.minimize else "viridis").copy()
     cmap.set_bad("#f2f2f2")
@@ -285,8 +287,7 @@ def plot_map_grid(
             "fitness", ascending=spec.minimize
         )
         for _, row in ranked.head(annotate_best).iterrows():
-            ix = int(row["cell_x"])
-            iy = int(row["cell_y"])
+            ix, iy = _cell_for_metrics(float(row["x"]), float(row["y"]), spec)
             cx = x_centers[ix]
             cy = y_centers[iy]
             ax.text(
@@ -305,7 +306,7 @@ def plot_map_grid(
     ax.set_ylabel(_axis_label(spec.y_metric), fontsize=12)
     ax.set_title(
         f"MAP-Elites archive - {label}\n"
-        f"{occupied}/{total_cells} occupied cells, color = {spec.fitness_metric}",
+        f"{occupied}/{total_cells} performance cells, {archive_elites} archive elites, color = {spec.fitness_metric}",
         fontsize=13,
         pad=12,
     )
@@ -329,7 +330,7 @@ def plot_map_grid(
             f"{spec.fitness_metric}={float(best_row['fitness']):.6g}"
         )
     print(f"Saved: {output}")
-    print(f"occupied {occupied}/{total_cells}{best_msg}")
+    print(f"performance cells {occupied}/{total_cells}; archive elites {archive_elites}{best_msg}")
 
 
 async def async_main() -> None:
