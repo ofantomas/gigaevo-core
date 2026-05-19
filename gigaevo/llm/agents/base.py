@@ -5,16 +5,30 @@ LLM-based agents inherit from. Each agent defines its own domain-specific
 state schema using TypedDict.
 """
 
+import asyncio
 from abc import ABC, abstractmethod
+import json
+import os
 from typing import Any
 
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from loguru import logger
 
 from gigaevo.llm.models import MultiModelRouter, get_selected_model
+
+
+def _langfuse_metadata_value(value: Any, max_len: int = 200) -> str:
+    """Return a string value acceptable for Langfuse propagated metadata."""
+    if isinstance(value, (list, tuple, set)):
+        text = ",".join(str(item) for item in value)
+    else:
+        text = str(value)
+    if len(text) <= max_len:
+        return text
+    return f"{text[: max_len - 3]}..."
 
 
 class LangGraphAgent(ABC):
@@ -88,7 +102,24 @@ class LangGraphAgent(ABC):
         Returns:
             Updated state with llm_response field
         """
-        response = await self.llm.ainvoke(state["messages"])
+        response = None
+        for attempt in range(3):
+            try:
+                response = await self.llm.ainvoke(
+                    state["messages"],
+                    config=self._llm_run_config(state),
+                )
+                break
+            except json.JSONDecodeError:
+                if attempt == 2:
+                    raise
+                logger.warning(
+                    "[{}] LLM response JSON decode failed; retrying ({}/3)",
+                    self.__class__.__name__,
+                    attempt + 2,
+                )
+                await asyncio.sleep(1.5 * (attempt + 1))
+
         state["llm_response"] = response
 
         # Track metadata
@@ -101,6 +132,55 @@ class LangGraphAgent(ABC):
             state["metadata"]["model_used"] = model_used
 
         return state
+
+    def _llm_run_config(self, state: Any) -> RunnableConfig:
+        """Build LangChain run config with useful Langfuse trace metadata."""
+        agent_name = self.__class__.__name__
+        stage_name = (
+            agent_name.removesuffix("Agent") + "Stage"
+            if agent_name.endswith("Agent")
+            else agent_name
+        )
+
+        env_tags = [
+            tag.strip()
+            for tag in os.environ.get("LANGFUSE_TAGS", "").split(",")
+            if tag.strip()
+        ]
+        tags = list(dict.fromkeys([*env_tags, stage_name, agent_name]))
+
+        state_metadata = {}
+        if isinstance(state, dict):
+            raw_metadata = state.get("metadata", {})
+            if isinstance(raw_metadata, dict):
+                state_metadata = raw_metadata
+
+        metadata: dict[str, Any] = {
+            "stage": stage_name,
+            "agent": agent_name,
+            "langfuse_tags": tags,
+        }
+        for key, value in state_metadata.items():
+            metadata[key] = _langfuse_metadata_value(value)
+
+        session_id = os.environ.get("LANGFUSE_SESSION_ID")
+        if not session_id:
+            parent_id = state_metadata.get("parent_id")
+            child_id = state_metadata.get("child_id")
+            program_id = state_metadata.get("program_id")
+            if parent_id and child_id:
+                session_id = f"{stage_name}:{str(parent_id)[:8]}->{str(child_id)[:8]}"
+            elif program_id:
+                session_id = f"{stage_name}:{str(program_id)[:8]}"
+            else:
+                session_id = stage_name
+        metadata["langfuse_session_id"] = _langfuse_metadata_value(session_id)
+
+        return {
+            "run_name": stage_name,
+            "tags": tags,
+            "metadata": metadata,
+        }
 
     @abstractmethod
     def parse_response(self, state: Any) -> Any:

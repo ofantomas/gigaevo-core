@@ -206,11 +206,12 @@ def create_lineage_agent(
         >>> insights = await agent.arun(parent, child)
     """
     # Load prompts from files
-    system_prompt = LineagePrompts.system(prompts_dir=prompts_dir)
+    system_template = LineagePrompts.system(prompts_dir=prompts_dir)
     user_template = LineagePrompts.user(prompts_dir=prompts_dir)
 
     # Create metrics formatter
     metrics_formatter = MetricsFormatter(metrics_context)
+    system_prompt = system_template.replace("{task_description}", task_description)
 
     # Return configured agent
     return LineageAgent(

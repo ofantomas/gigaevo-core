@@ -95,7 +95,7 @@ async def run_experiment(cfg: DictConfig) -> None:
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
-    load_dotenv()
+    load_dotenv(override=True)
     log_file_path = setup_logger(
         log_dir=cfg.logging.log_dir,
         level=cfg.logging.level,
