@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patheffects as path_effects
 import numpy as np
 import pandas as pd
 import redis
@@ -52,6 +51,15 @@ def _metric_series(df: pd.DataFrame, metric: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series(np.nan, index=df.index, dtype=float)
     return pd.to_numeric(df[col], errors="coerce")
+
+
+def _axis_label(metric: str) -> str:
+    labels = {
+        "fitness": "Average relative number of steps (fitness)",
+        "mean_rel_steps": "Average relative number of steps",
+        "mean_rel_energy": "Average relative energy recovery",
+    }
+    return labels.get(metric, metric)
 
 
 def _parse_cell(field: str) -> tuple[int, int] | None:
@@ -199,6 +207,33 @@ def _build_grid(records: pd.DataFrame, spec: GridSpec) -> np.ndarray:
     return grid
 
 
+def _auto_axis_bounds(
+    values: pd.Series, fallback_min: float, fallback_max: float
+) -> tuple[float, float]:
+    clean = pd.to_numeric(values, errors="coerce")
+    clean = clean[np.isfinite(clean) & (clean.abs() < 999)]
+    if clean.empty:
+        return fallback_min, fallback_max
+
+    lo = float(clean.min())
+    hi = float(clean.max())
+    if lo == hi:
+        pad = max(abs(lo) * 0.02, 1e-6)
+    else:
+        pad = 0.1 * (hi - lo)
+    return lo - pad, hi + pad
+
+
+def _resolve_plot_bounds(
+    records: pd.DataFrame, spec: GridSpec, bounds_mode: str
+) -> GridSpec:
+    if bounds_mode == "configured":
+        return spec
+    x_min, x_max = _auto_axis_bounds(records["x"], spec.x_min, spec.x_max)
+    y_min, y_max = _auto_axis_bounds(records["y"], spec.y_min, spec.y_max)
+    return replace(spec, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max)
+
+
 def plot_map_grid(
     records: pd.DataFrame,
     *,
@@ -207,14 +242,14 @@ def plot_map_grid(
     archive_key: str,
     source: str,
     spec: GridSpec,
+    bounds_mode: str,
     annotate_best: int,
-    show_points: bool,
-    metric_axes: bool,
     dpi: int,
 ) -> None:
     if records.empty:
         raise SystemExit("No MAP-Elites archive records to plot.")
 
+    spec = _resolve_plot_bounds(records, spec, bounds_mode)
     grid = _build_grid(records, spec)
     occupied = int(np.isfinite(grid).sum())
     total_cells = spec.x_bins * spec.y_bins
@@ -225,22 +260,11 @@ def plot_map_grid(
     fig, ax = plt.subplots(figsize=(13, 7.5))
     fig.patch.set_facecolor("white")
 
-    if metric_axes:
-        extent = (spec.x_min, spec.x_max, spec.y_min, spec.y_max)
-        x_edges = np.linspace(spec.x_min, spec.x_max, spec.x_bins + 1)
-        y_edges = np.linspace(spec.y_min, spec.y_max, spec.y_bins + 1)
-        x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-        y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-        x_label = spec.x_metric
-        y_label = spec.y_metric
-    else:
-        extent = (-0.5, spec.x_bins - 0.5, -0.5, spec.y_bins - 0.5)
-        x_edges = np.arange(-0.5, spec.x_bins + 0.5, 1.0)
-        y_edges = np.arange(-0.5, spec.y_bins + 0.5, 1.0)
-        x_centers = np.arange(spec.x_bins)
-        y_centers = np.arange(spec.y_bins)
-        x_label = f"{spec.x_metric} cell"
-        y_label = f"{spec.y_metric} cell"
+    extent = (spec.x_min, spec.x_max, spec.y_min, spec.y_max)
+    x_edges = np.linspace(spec.x_min, spec.x_max, spec.x_bins + 1)
+    y_edges = np.linspace(spec.y_min, spec.y_max, spec.y_bins + 1)
+    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
+    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
 
     image = ax.imshow(
         np.ma.masked_invalid(grid),
@@ -255,21 +279,6 @@ def plot_map_grid(
     ax.set_yticks(y_edges, minor=True)
     ax.grid(which="minor", color="white", linewidth=0.45, alpha=0.7)
     ax.tick_params(which="minor", bottom=False, left=False)
-
-    if show_points:
-        valid_points = records[
-            records["x"].notna() & records["y"].notna() & records["fitness"].notna()
-        ]
-        point_x = valid_points["x"] if metric_axes else valid_points["cell_x"]
-        point_y = valid_points["y"] if metric_axes else valid_points["cell_y"]
-        ax.scatter(
-            point_x,
-            point_y,
-            s=18,
-            color="black",
-            alpha=0.35,
-            linewidths=0,
-        )
 
     if annotate_best > 0:
         ranked = records.dropna(subset=["fitness"]).sort_values(
@@ -288,35 +297,22 @@ def plot_map_grid(
                 va="center",
                 fontsize=6.5,
                 color="white",
-                path_effects=[
-                    path_effects.withStroke(linewidth=1.4, foreground="black")
-                ],
             )
 
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
+    ax.set_xlabel(_axis_label(spec.x_metric), fontsize=12)
+    ax.set_ylabel(_axis_label(spec.y_metric), fontsize=12)
     ax.set_title(
-        f"MAP-Elites grid - {label}\n"
-        f"{occupied}/{total_cells} occupied cells, color = {spec.fitness_metric}, source = {source}",
-        fontsize=14,
+        f"MAP-Elites archive - {label}\n"
+        f"{occupied}/{total_cells} occupied cells, color = {spec.fitness_metric}",
+        fontsize=13,
+        pad=12,
     )
 
     cbar = fig.colorbar(image, ax=ax, pad=0.02)
     direction = "lower is better" if spec.minimize else "higher is better"
     cbar.set_label(f"{spec.fitness_metric} ({direction})", rotation=270, labelpad=22)
-
-    ax.text(
-        0.01,
-        -0.13,
-        f"archive key: {archive_key}",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=9,
-        color="#444444",
-    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=dpi, bbox_inches="tight")
@@ -364,6 +360,15 @@ async def async_main() -> None:
     parser.add_argument("--x-bins", type=int, default=40)
     parser.add_argument("--y-bins", type=int, default=10)
     parser.add_argument(
+        "--bounds-mode",
+        choices=["auto", "configured"],
+        default="auto",
+        help=(
+            "auto infers performance-axis bounds from archive occupants; "
+            "configured uses --x-min/--x-max/--y-min/--y-max."
+        ),
+    )
+    parser.add_argument(
         "--maximize",
         action="store_true",
         help="Use if higher fitness is better. Default is minimization.",
@@ -374,15 +379,12 @@ async def async_main() -> None:
         help="Ignore Redis archive and reconstruct best cell occupants from all programs.",
     )
     parser.add_argument("--annotate-best", type=int, default=0)
-    parser.add_argument("--no-points", action="store_true")
     parser.add_argument(
-        "--metric-axes",
+        "--no-points",
         action="store_true",
-        help=(
-            "Use configured metric bounds on axes. By default Redis archives are "
-            "shown in cell coordinates because dynamic MAP bounds are not persisted."
-        ),
+        help=argparse.SUPPRESS,
     )
+    parser.add_argument("--metric-axes", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--dpi", type=int, default=150)
     args = parser.parse_args()
 
@@ -435,9 +437,8 @@ async def async_main() -> None:
         archive_key=archive_key,
         source=source,
         spec=spec,
+        bounds_mode=args.bounds_mode,
         annotate_best=args.annotate_best,
-        show_points=not args.no_points,
-        metric_axes=args.metric_axes or source == "reconstructed",
         dpi=args.dpi,
     )
 
