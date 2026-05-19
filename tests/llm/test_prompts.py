@@ -28,6 +28,14 @@ class TestLoadPrompt:
         template = load_prompt("mutation", "user")
         assert isinstance(template, str) and len(template) > 0
 
+    def test_loads_default_mutation_system_diff(self):
+        template = load_prompt("mutation", "system_diff")
+        assert isinstance(template, str) and "SEARCH/REPLACE" in template
+
+    def test_loads_default_mutation_user_diff(self):
+        template = load_prompt("mutation", "user_diff")
+        assert isinstance(template, str) and "SEARCH/REPLACE" in template
+
     def test_loads_default_insights_system(self):
         template = load_prompt("insights", "system")
         assert isinstance(template, str) and len(template) > 0

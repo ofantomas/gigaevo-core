@@ -21,7 +21,7 @@ from gigaevo.llm.agents.factories import (
 )
 from gigaevo.llm.agents.insights import InsightsAgent
 from gigaevo.llm.agents.lineage import LineageAgent
-from gigaevo.llm.agents.mutation import MutationAgent
+from gigaevo.llm.agents.mutation import MutationAgent, MutationStructuredOutputDiff
 from gigaevo.llm.agents.scoring import ScoringAgent
 from gigaevo.programs.metrics.context import MetricsContext, MetricSpec
 
@@ -89,6 +89,27 @@ class TestCreateMutationAgent:
             mutation_mode="diff",
         )
         assert agent.mutation_mode == "diff"
+
+    def test_diff_mode_loads_diff_prompts_and_schema(self, tmp_path: Path):
+        custom_dir = tmp_path / "mutation"
+        custom_dir.mkdir()
+        (custom_dir / "system_diff.txt").write_text(
+            "Diff system: {task_description}\n{metrics_description}"
+        )
+        (custom_dir / "user_diff.txt").write_text("Diff user: {count}\n{parent_blocks}")
+        llm = _mock_llm()
+
+        agent = create_mutation_agent(
+            llm=llm,
+            task_description="DIFF_TASK",
+            metrics_context=_make_ctx(),
+            mutation_mode="diff",
+            prompts_dir=tmp_path,
+        )
+
+        assert "Diff system: DIFF_TASK" in agent.system_prompt
+        assert agent.user_prompt_template.startswith("Diff user:")
+        llm.with_structured_output.assert_called_once_with(MutationStructuredOutputDiff)
 
     def test_user_prompt_template_set(self):
         agent = create_mutation_agent(

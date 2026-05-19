@@ -4,7 +4,6 @@ import os
 import re
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
-import diffpatch
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
@@ -76,6 +75,34 @@ class MutationStructuredOutput(BaseModel):
             "Use actual newlines between lines, not literal backslash-n."
         )
     )
+
+
+class MutationStructuredOutputDiff(MutationStructuredOutput):
+    """Diff-mode variant: `code` holds SEARCH/REPLACE blocks against the parent."""
+
+    code: str = Field(
+        description=(
+            "One or more SEARCH/REPLACE blocks against Parent 1. Each block has "
+            "the exact form:\n"
+            "<<<<<<< SEARCH\n"
+            "<verbatim block from Parent 1, including leading/trailing whitespace>\n"
+            "=======\n"
+            "<replacement block (or empty to delete)>\n"
+            ">>>>>>> REPLACE\n"
+            "The SEARCH text must appear EXACTLY ONCE in Parent 1 — copy enough "
+            "surrounding context to make it unique. Multiple blocks are applied "
+            "in order. Do NOT emit unified diffs (no `---`/`+++`/`@@`), do NOT "
+            "emit full Python source, do NOT wrap in markdown fences. Use actual "
+            "newlines, not literal backslash-n."
+        )
+    )
+
+
+def _select_output_schema(mutation_mode: str) -> type[MutationStructuredOutput]:
+    """Return the Pydantic output schema appropriate for the mutation mode."""
+    if mutation_mode == "diff":
+        return MutationStructuredOutputDiff
+    return MutationStructuredOutput
 
 
 # Re-export from canonical location for backward compatibility
@@ -162,6 +189,16 @@ class MutationAgent(LangGraphAgent):
         self.mutation_mode = mutation_mode
         self.system_prompt = system_prompt
         self.user_prompt_template = user_prompt_template
+        # Prompt-type names used for (re)fetching from the prompt fetcher.
+        # In diff mode we prefer mutation/{system,user}_diff.txt so the LLM
+        # sees diff-specific instructions and so a co-evolving prompt archive
+        # can hold a separate diff-mode champion.
+        if mutation_mode == "diff":
+            self._system_prompt_type = "system_diff"
+            self._user_prompt_type = "user_diff"
+        else:
+            self._system_prompt_type = "system"
+            self._user_prompt_type = "user"
 
         # Dynamic prompt fetching support
         self._prompt_fetcher = prompt_fetcher
@@ -175,8 +212,11 @@ class MutationAgent(LangGraphAgent):
         else:
             self._metrics_formatter = None
 
-        # Create structured output LLM
-        self.structured_llm = llm.with_structured_output(MutationStructuredOutput)
+        # Create structured output LLM (schema varies with mutation mode so
+        # the `code` field description tells the LLM what to emit).
+        self.structured_llm = llm.with_structured_output(
+            _select_output_schema(mutation_mode)
+        )
 
         super().__init__(llm)
 
@@ -335,14 +375,18 @@ class MutationAgent(LangGraphAgent):
             and self._prompt_fetcher.is_dynamic
             and self._metrics_formatter is not None
         ):
-            fetched_sys = self._prompt_fetcher.fetch("mutation", "system")
+            fetched_sys = self._prompt_fetcher.fetch(
+                "mutation", self._system_prompt_type
+            )
             self.system_prompt = fetched_sys.text.format(
                 task_description=self._task_description,
                 metrics_description=self._metrics_formatter.format_metrics_description(),
             )
             state["prompt_id"] = fetched_sys.prompt_id
             # Also refresh user prompt template if a co-evolved version is available
-            fetched_user = self._prompt_fetcher.fetch("mutation", "user")
+            fetched_user = self._prompt_fetcher.fetch(
+                "mutation", self._user_prompt_type
+            )
             if fetched_user.prompt_id is not None:
                 self.user_prompt_template = fetched_user.text
         else:
@@ -451,8 +495,12 @@ class MutationAgent(LangGraphAgent):
 
             # Fix JSON-escaped sequences from structured output serialization.
             # LLMs sometimes produce literal \n, \t, \" in the code field when
-            # they confuse JSON escaping with Python syntax.
-            code_from_llm = self._fix_json_escaped_code(code_from_llm)
+            # they confuse JSON escaping with Python syntax. The acceptance
+            # test for the unescaped result differs by mode (Python AST in
+            # rewrite mode; SEARCH/REPLACE shape in diff mode).
+            code_from_llm = self._fix_json_escaped_code(
+                code_from_llm, mode=state["mutation_mode"]
+            )
 
             if state["mutation_mode"] == "diff":
                 # Apply diff to parent code
@@ -512,7 +560,22 @@ class MutationAgent(LangGraphAgent):
         return state
 
     @staticmethod
-    def _fix_json_escaped_code(code: str) -> str:
+    def _looks_like_diff_payload(text: str) -> bool:
+        """Heuristic: does *text* look like a SEARCH/REPLACE diff payload?
+
+        Used to decide whether a JSON-unescaped payload is a plausible
+        SEARCH/REPLACE diff in diff mode (where AST-parsing isn't a valid
+        acceptance test). Conservative: requires all three marker tokens
+        so we don't accidentally treat arbitrary text as a diff.
+        """
+        return (
+            "<<<<<<< SEARCH" in text
+            and "=======" in text
+            and ">>>>>>> REPLACE" in text
+        )
+
+    @classmethod
+    def _fix_json_escaped_code(cls, code: str, mode: str = "rewrite") -> str:
         """Fix JSON-escaped sequences in code from structured output.
 
         LLMs using structured output sometimes produce literal JSON escape
@@ -521,13 +584,40 @@ class MutationAgent(LangGraphAgent):
         - ``\\n`` instead of actual newlines (escaped newlines)
         - ``\\t`` instead of actual tabs (escaped tabs)
 
-        This happens when the model confuses JSON string escaping with
-        the Python code content. We only apply the fix when the original
-        code fails to parse and the cleaned version parses successfully.
+        Acceptance test for the unescaped result depends on *mode*:
+
+        - ``rewrite`` (default): unescape iff the result parses as Python.
+          Preserves prior behavior.
+        - ``diff``: unescape iff the result looks like a SEARCH/REPLACE
+          payload (contains all three marker tokens). The Python AST check
+          is not applicable to diffs, so without this branch the unescape
+          would never fire and JSON-escaped diffs would reach the
+          SEARCH/REPLACE parser as one giant line with literal ``\\n``
+          sequences.
         """
         # Quick check: does code contain any JSON escape sequences?
         if "\\n" not in code and '\\"' not in code and "\\t" not in code:
             return code
+
+        if mode == "diff":
+            # Don't pre-check the original — a JSON-escaped diff *can*
+            # contain marker substrings on one giant line; we care that the
+            # *unescaped* version is plausibly a multi-line SEARCH/REPLACE
+            # payload.
+            cleaned = (
+                code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
+            )
+            if cls._looks_like_diff_payload(cleaned):
+                logger.debug(
+                    '[MutationAgent] Fixed JSON-escaped diff (\\n={}, \\t={}, \\"={})',
+                    code.count("\\n"),
+                    code.count("\\t"),
+                    code.count('\\"'),
+                )
+                return cleaned
+            return code  # Unescaped result doesn't look like a diff — leave alone
+
+        # Rewrite mode (default): gate on AST validity, as before.
         try:
             ast.parse(code)
             return code  # Already valid — don't touch it
@@ -579,24 +669,91 @@ class MutationAgent(LangGraphAgent):
 
         return code_block.rstrip()
 
+    # SEARCH/REPLACE block markers. Loose matching on the marker line allows
+    # minor LLM variations (extra spaces, trailing text) but the marker tokens
+    # themselves are fixed.
+    _SR_BLOCK_RE = re.compile(
+        r"<{5,}\s*SEARCH\s*\n(.*?)\n={5,}\s*\n(.*?)\n>{5,}\s*REPLACE",
+        re.DOTALL,
+    )
+
+    @classmethod
+    def _parse_search_replace_blocks(cls, text: str) -> list[tuple[str, str]]:
+        """Extract (search, replace) pairs from LLM output."""
+        blocks = [
+            (m.group(1), m.group(2)) for m in cls._SR_BLOCK_RE.finditer(text)
+        ]
+        if not blocks:
+            raise ValueError(
+                "No SEARCH/REPLACE blocks found. Expected `<<<<<<< SEARCH ... "
+                "======= ... >>>>>>> REPLACE` markers."
+            )
+        return blocks
+
+    @staticmethod
+    def _apply_search_replace_blocks(
+        original_code: str, blocks: list[tuple[str, str]]
+    ) -> str:
+        """Apply SEARCH/REPLACE blocks sequentially to original_code.
+
+        Each SEARCH text must appear exactly once in the running parent. Multiple
+        occurrences or zero occurrences cause rejection so the LLM must include
+        enough surrounding context to disambiguate.
+        """
+        current = original_code
+        for idx, (search, replace) in enumerate(blocks, start=1):
+            if not search:
+                raise ValueError(f"Block {idx}: empty SEARCH text")
+            count = current.count(search)
+            if count == 0:
+                preview = search.splitlines()[0][:80] if search else ""
+                raise ValueError(
+                    f"Block {idx}: SEARCH text not found in parent "
+                    f"(first line: {preview!r}). The LLM must copy the "
+                    f"block verbatim from the parent including whitespace."
+                )
+            if count > 1:
+                preview = search.splitlines()[0][:80] if search else ""
+                raise ValueError(
+                    f"Block {idx}: SEARCH text matches {count} locations in "
+                    f"parent (first line: {preview!r}). Include more "
+                    f"surrounding context to make the match unique."
+                )
+            current = current.replace(search, replace, 1)
+        return current
+
     def _apply_diff_and_extract(self, original_code: str, response_text: str) -> str:
-        """Extract diff from response and apply to original code.
+        """Extract SEARCH/REPLACE blocks from LLM response, apply, and validate.
 
         Args:
             original_code: Original parent code
-            response_text: LLM response containing diff
+            response_text: LLM response containing SEARCH/REPLACE blocks
 
         Returns:
-            Patched code
+            Patched code that is guaranteed to parse as valid Python.
 
         Raises:
-            ValueError: If diff is empty or patch fails
+            ValueError: If no blocks are found, a SEARCH text is missing /
+                non-unique in the parent, or the final patched output does
+                not parse as valid Python.
         """
         diff_text = self._extract_code_block(response_text)
         if not diff_text.strip():
             raise ValueError("Empty diff returned by LLM")
 
         try:
-            return diffpatch.apply_patch(original_code, diff_text)
+            blocks = self._parse_search_replace_blocks(diff_text)
+            patched = self._apply_search_replace_blocks(original_code, blocks)
+        except ValueError:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to apply patch: {e}") from e
+
+        try:
+            ast.parse(patched)
+        except SyntaxError as e:
+            raise ValueError(
+                f"Patched code is not valid Python (line {e.lineno}): {e.msg}"
+            ) from e
+
+        return patched
