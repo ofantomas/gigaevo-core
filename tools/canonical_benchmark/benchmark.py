@@ -55,27 +55,21 @@ class ChainVariant:
 # Mirrors the NeurIPS matrix from feat/carl-runner-implementation's
 # scripts/launch_experiments.py — 8 hover feedback×execution combos + 1 each for
 # ifbench / gsm8k / hotpotqa / aime. Task paths point at the paper's canonical
-# `chains/neurips_test/<task>/static` dirs so the benchmark matches the
+# `chains/nlp/<task>/static` dirs so the benchmark matches the
 # pre-registered NeurIPS configuration. Labels match the original launcher.
 CHAIN_VARIANTS: tuple[ChainVariant, ...] = (
-    ChainVariant("hover_none_fast", "chains/neurips_test/hover/static", "none"),
-    ChainVariant("hover_simple_fast", "chains/neurips_test/hover/static", "simple"),
-    ChainVariant("hover_dataset_fast", "chains/neurips_test/hover/static", "dataset"),
-    ChainVariant("hover_metrics_fast", "chains/neurips_test/hover/static", "metrics"),
-    ChainVariant("hover_none_sc", "chains/neurips_test/hover/static", "self_critic"),
-    ChainVariant(
-        "hover_simple_sc", "chains/neurips_test/hover/static", "self_critic_simple"
-    ),
-    ChainVariant(
-        "hover_dataset_sc", "chains/neurips_test/hover/static", "self_critic_dataset"
-    ),
-    ChainVariant(
-        "hover_metrics_sc", "chains/neurips_test/hover/static", "self_critic_metrics"
-    ),
-    ChainVariant("ifbench_none_fast", "chains/neurips_test/ifbench/static", "none"),
-    ChainVariant("gsm8k_none_fast", "chains/neurips_test/gsm8k/static", "none"),
-    ChainVariant("hotpotqa_none_fast", "chains/neurips_test/hotpotqa/static", "none"),
-    ChainVariant("aime_none_fast", "chains/neurips_test/aime/static", "none"),
+    ChainVariant("hover_none_fast", "chains/nlp/hover/static", "none"),
+    ChainVariant("hover_simple_fast", "chains/nlp/hover/static", "simple"),
+    ChainVariant("hover_dataset_fast", "chains/nlp/hover/static", "dataset"),
+    ChainVariant("hover_metrics_fast", "chains/nlp/hover/static", "metrics"),
+    ChainVariant("hover_none_sc", "chains/nlp/hover/static", "self_critic"),
+    ChainVariant("hover_simple_sc", "chains/nlp/hover/static", "self_critic_simple"),
+    ChainVariant("hover_dataset_sc", "chains/nlp/hover/static", "self_critic_dataset"),
+    ChainVariant("hover_metrics_sc", "chains/nlp/hover/static", "self_critic_metrics"),
+    ChainVariant("ifbench_none_fast", "chains/nlp/ifbench/static", "none"),
+    ChainVariant("gsm8k_none_fast", "chains/nlp/gsm8k/static", "none"),
+    ChainVariant("hotpotqa_none_fast", "chains/nlp/hotpotqa/static", "none"),
+    ChainVariant("aime_none_fast", "chains/nlp/aime/static", "none"),
 )
 
 
