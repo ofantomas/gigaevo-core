@@ -4,6 +4,12 @@ A fixed-configuration smoke test for the GigaEvo mutation/evolution machinery.
 Run this **on every major breaking change** to detect generic regressions
 before merging.
 
+Two profiles:
+
+- `--profile standard` (default) — 5 math problems × 2 seeds.
+- `--profile chain` — 10-row chain matrix (8 hover feedback×execution combos +
+  ifbench + gsm8k) × 1 seed by default. See [Chain profile](#chain-profile) below.
+
 ## What it measures
 
 Best fitness found after a fixed mutation budget on 5 diverse math problems,
@@ -192,6 +198,68 @@ scripts.
    seed — inspect the per-run log under
    `output/canonical_benchmark/<problem>_s<seed>_db<N>/run.log` before drawing
    conclusions.
+
+## Chain profile
+
+The chain profile sweeps the NeurIPS chain-runner matrix from PR #184. Spawn
+adds one Hydra group selector on top of the frozen 5 args:
+
+```
+python run.py problem.name=<P> redis.db=<N> hydra.run.dir=<DIR> \
+    llm_base_url=<URL> model_name=<NAME> chains/runner=<PRESET>
+```
+
+`chains/runner=<PRESET>` selects one of the eight `config/chains/runner/*.yaml`
+presets, which sets the `GIGAEVO_CHAIN_RUNNER_CONFIG` env var consumed by
+`RunnerConfig.from_env()` inside the chain task's `validate.py`.
+
+### Variant matrix
+
+| Label | Problem | Runner preset | DB |
+|---|---|---|---|
+| `hover_none_fast` | `chains/hover/static_soft` | `none` | 0 |
+| `hover_simple_fast` | `chains/hover/static_soft` | `simple` | 1 |
+| `hover_dataset_fast` | `chains/hover/static_soft` | `dataset` | 2 |
+| `hover_metrics_fast` | `chains/hover/static_soft` | `metrics` | 3 |
+| `hover_none_sc` | `chains/hover/static_soft` | `self_critic` | 4 |
+| `hover_simple_sc` | `chains/hover/static_soft` | `self_critic_simple` | 5 |
+| `hover_dataset_sc` | `chains/hover/static_soft` | `self_critic_dataset` | 6 |
+| `hover_metrics_sc` | `chains/hover/static_soft` | `self_critic_metrics` | 7 |
+| `ifbench_none_fast` | `chains/ifbench/static` | `none` | 8 |
+| `gsm8k_none_fast` | `chains/gsm8k/static` | `none` | 9 |
+
+### Usage
+
+```bash
+python tools/canonical_benchmark/run_benchmark.py \
+    --profile chain \
+    --label "chain-sanity" \
+    --llm-base-url http://localhost:8000/v1 \
+    --model-name Qwen3-235B-A22B-Thinking-2507
+
+# Subset:
+python tools/canonical_benchmark/run_benchmark.py \
+    --profile chain --label probe-gsm8k \
+    --variants gsm8k_none_fast \
+    --llm-base-url http://localhost:8000/v1 \
+    --model-name Qwen3-235B-A22B-Thinking-2507
+
+# Two seeds (sequential — Redis caps at 16 DBs and 10 × 2 = 20 > 16):
+python tools/canonical_benchmark/run_benchmark.py \
+    --profile chain --label chain-2seed --seeds 0 1 --reuse-dbs \
+    --llm-base-url http://localhost:8000/v1 \
+    --model-name Qwen3-235B-A22B-Thinking-2507
+```
+
+`--reuse-dbs` is **required** when `--seeds` carries more than one value
+because 10 variants × 2 seeds exceed Redis's 16-DB cap; the driver runs
+seed 0 across all variants, extracts, flushes, then runs seed 1 on the same
+DB allocation.
+
+`--variants` accepts any subset of the labels in the matrix above. Other
+flags (`--parallelism`, `--override`, `--per-run-timeout-sec`,
+`--skip-flush` / `--skip-launch` / `--dry-run` / `--no-history`) behave the
+same as the standard profile.
 
 ## Why a benchmark and not a unit test
 

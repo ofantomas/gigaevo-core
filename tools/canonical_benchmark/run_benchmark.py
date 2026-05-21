@@ -36,15 +36,20 @@ if str(_REPO_ROOT_FOR_IMPORT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORT))
 
 from tools.canonical_benchmark.benchmark import (  # noqa: E402
+    CHAIN_VARIANTS,
     DEFAULT_MAX_MUTANTS,
     DEFAULT_NUM_PARENTS,
     PROBLEMS,
     SEEDS,
     BenchRow,
+    ChainVariant,
     aggregate_results,
+    build_chain_run_command,
     build_run_command,
     build_top_cmd,
+    chain_db_for,
     db_for,
+    format_chain_results_markdown,
     format_results_markdown,
     parse_top_n_fitness,
 )
@@ -122,17 +127,53 @@ def parse_args() -> argparse.Namespace:
         help="Hard wall-clock cap per run.py invocation (default 6h).",
     )
     p.add_argument(
+        "--profile",
+        choices=("standard", "chain"),
+        default="standard",
+        help=(
+            "Which benchmark matrix to run. ``standard`` (default) sweeps the "
+            "5 canonical math problems × 2 seeds. ``chain`` sweeps the 10-row "
+            "NeurIPS chain matrix (8 hover feedback×execution combos + "
+            "ifbench + gsm8k) × 1 seed (by default). With ``chain`` the "
+            "``--problems`` flag is ignored; use ``--variants`` instead."
+        ),
+    )
+    p.add_argument(
         "--problems",
         nargs="*",
         default=list(PROBLEMS),
-        help="Subset of problems to run (default: all 5 canonical).",
+        help="Subset of problems to run for ``--profile standard`` (default: all 5).",
+    )
+    p.add_argument(
+        "--variants",
+        nargs="*",
+        default=None,
+        help=(
+            "Subset of chain variant labels to run for ``--profile chain`` "
+            "(default: all 10). Example: --variants hover_none_fast gsm8k_none_fast"
+        ),
     )
     p.add_argument(
         "--seeds",
         nargs="*",
         type=int,
-        default=list(SEEDS),
-        help="Subset of seeds (default: 0 1).",
+        default=None,
+        help=(
+            "Subset of seeds. Default depends on profile: ``standard`` → 0 1; "
+            "``chain`` → 0. For ``chain`` with more than one seed pass "
+            "``--reuse-dbs`` so the same DB is reused across seeds (Redis caps "
+            "at 16 DBs and 10 variants × 2 seeds = 20 > 16)."
+        ),
+    )
+    p.add_argument(
+        "--reuse-dbs",
+        action="store_true",
+        help=(
+            "For ``--profile chain --seeds 0 1`` only: extract then flush "
+            "between seeds so the same DB serves multiple seeds in sequence. "
+            "Forces parallelism=1 across seeds; variants within one seed can "
+            "still run in parallel per ``--parallelism``."
+        ),
     )
     p.add_argument(
         "--skip-flush",
@@ -375,18 +416,170 @@ def run_one(args: argparse.Namespace, problem: str, seed: int) -> BenchRow:
     )
 
 
+def launch_chain_run(
+    *,
+    python_exe: str,
+    variant: ChainVariant,
+    db: int,
+    output_dir: Path,
+    timeout_sec: int,
+    dry_run: bool,
+    llm_base_url: str,
+    model_name: str,
+    extra_overrides: list[str] | None = None,
+) -> tuple[int, str, str]:
+    """Like ``launch_run`` but inserts ``chains/runner=<preset>`` first."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cmd = build_chain_run_command(
+        python_exe=python_exe,
+        variant=variant,
+        db=db,
+        output_dir=str(output_dir),
+        llm_base_url=llm_base_url,
+        model_name=model_name,
+        extra_overrides=extra_overrides,
+    )
+    print(f"  [launch] {' '.join(cmd)}", flush=True)
+    if dry_run:
+        return 0, "(dry-run)", ""
+
+    env = {**os.environ}
+    env.pop("HTTP_PROXY", None)
+    env.pop("HTTPS_PROXY", None)
+    env.pop("http_proxy", None)
+    env.pop("https_proxy", None)
+
+    log_file = output_dir / "run.log"
+    with log_file.open("w") as logf:
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=REPO_ROOT,
+                env=env,
+                stdout=logf,
+                stderr=subprocess.STDOUT,
+                timeout=timeout_sec,
+                check=False,
+            )
+            return proc.returncode, "", ""
+        except subprocess.TimeoutExpired:
+            return 124, "", "TIMEOUT"
+
+
+def run_chain_one(
+    args: argparse.Namespace, variant: ChainVariant, seed: int
+) -> BenchRow:
+    variant_idx = next(
+        i for i, v in enumerate(CHAIN_VARIANTS) if v.label == variant.label
+    )
+    db = chain_db_for(variant_idx)
+    run_out = Path(args.output_root) / f"{variant.label}_s{seed}_db{db}"
+
+    print(f"\n=== {variant.label} seed={seed} db={db} ===", flush=True)
+    if not args.skip_launch and not args.skip_flush:
+        flush_db(args.gigaevo_exe, db, args.dry_run)
+    if not args.skip_launch:
+        rc, _out, _err = launch_chain_run(
+            python_exe=args.python_exe,
+            variant=variant,
+            db=db,
+            output_dir=run_out,
+            timeout_sec=args.per_run_timeout_sec,
+            dry_run=args.dry_run,
+            llm_base_url=args.llm_base_url,
+            model_name=args.model_name,
+            extra_overrides=args.extra_overrides,
+        )
+        if rc != 0:
+            print(f"  [warn] run.py exit={rc}", flush=True)
+
+    fitness, state = extract_fitness(
+        args.gigaevo_exe, variant.problem, db, args.dry_run
+    )
+    mutants = count_mutants(args.gigaevo_exe, variant.problem, db, args.dry_run)
+    return BenchRow(
+        problem=variant.problem,
+        seed=seed,
+        fitness=fitness,
+        mutants_evaluated=mutants,
+        state=state,
+        variant_label=variant.label,
+    )
+
+
+def _resolve_seeds(args: argparse.Namespace) -> list[int]:
+    if args.seeds is not None:
+        return list(args.seeds)
+    return [0] if args.profile == "chain" else list(SEEDS)
+
+
+def _resolve_chain_variants(args: argparse.Namespace) -> list[ChainVariant]:
+    if not args.variants:
+        return list(CHAIN_VARIANTS)
+    by_label = {v.label: v for v in CHAIN_VARIANTS}
+    selected: list[ChainVariant] = []
+    for label in args.variants:
+        if label not in by_label:
+            raise SystemExit(
+                f"--variants: unknown label '{label}'. "
+                f"Known labels: {sorted(by_label.keys())}"
+            )
+        selected.append(by_label[label])
+    return selected
+
+
+def _run_chain_profile(
+    args: argparse.Namespace, commit: str, timestamp: str
+) -> tuple[list[BenchRow], float]:
+    variants = _resolve_chain_variants(args)
+    seeds = _resolve_seeds(args)
+    if len(seeds) > 1 and not args.reuse_dbs:
+        raise SystemExit(
+            "--profile chain with more than one seed requires --reuse-dbs "
+            "(Redis caps at 16 DBs and 10 variants × 2 seeds = 20 > 16). "
+            "Either pass --seeds 0 (default), or pass --seeds 0 1 --reuse-dbs."
+        )
+
+    rows: list[BenchRow] = []
+    t0 = time.time()
+    for seed in seeds:
+        print(f"\n--- chain seed={seed} ---", flush=True)
+        if args.parallelism == 1:
+            for variant in variants:
+                rows.append(run_chain_one(args, variant, seed))
+        else:
+            with ThreadPoolExecutor(max_workers=args.parallelism) as ex:
+                futs = {ex.submit(run_chain_one, args, v, seed): v for v in variants}
+                for fut in as_completed(futs):
+                    rows.append(fut.result())
+    elapsed = time.time() - t0
+
+    label_idx = {v.label: i for i, v in enumerate(CHAIN_VARIANTS)}
+    rows.sort(key=lambda r: (label_idx.get(r.variant_label or "", 999), r.seed))
+    return rows, elapsed
+
+
 def main() -> int:
     args = parse_args()
     if args.parallelism < 1:
         print("--parallelism must be >= 1", file=sys.stderr)
         return 2
+    seeds = _resolve_seeds(args)
     commit = _git_head_short()
     timestamp = _now_iso()
     print(
-        f"Canonical benchmark: label={args.label} commit={commit} ts={timestamp}",
+        f"Canonical benchmark: profile={args.profile} label={args.label} "
+        f"commit={commit} ts={timestamp}",
         flush=True,
     )
-    print(f"  problems={list(args.problems)} seeds={list(args.seeds)}", flush=True)
+    if args.profile == "chain":
+        variants = _resolve_chain_variants(args)
+        print(
+            f"  variants={[v.label for v in variants]} seeds={seeds}",
+            flush=True,
+        )
+    else:
+        print(f"  problems={list(args.problems)} seeds={seeds}", flush=True)
     print(
         f"  spawn: python run.py problem.name=<P> redis.db=<N> hydra.run.dir=<DIR> "
         f"llm_base_url={args.llm_base_url} model_name={args.model_name} "
@@ -398,7 +591,38 @@ def main() -> int:
     if args.extra_overrides:
         print(f"  extra_overrides={args.extra_overrides}", flush=True)
 
-    pairs: list[tuple[str, int]] = [(p, s) for p in args.problems for s in args.seeds]
+    if args.profile == "chain":
+        rows, elapsed = _run_chain_profile(args, commit, timestamp)
+        report = format_chain_results_markdown(
+            label=args.label,
+            commit=commit,
+            timestamp=timestamp,
+            rows=rows,
+            seeds=seeds,
+            extra_overrides=args.extra_overrides,
+            parallelism=args.parallelism,
+        )
+        report += f"\n_Total wall-clock: {elapsed / 60:.1f} min_\n"
+        print("\n" + "=" * 60 + "\n", flush=True)
+        print(report, flush=True)
+
+        if not args.no_history and not args.dry_run:
+            _append_history(
+                report,
+                label=args.label,
+                commit=commit,
+                timestamp=timestamp,
+                rows=rows,
+                elapsed=elapsed,
+                extra_overrides=list(args.extra_overrides),
+                parallelism=args.parallelism,
+            )
+            _maybe_notify_chain(
+                label=args.label, commit=commit, rows=rows, elapsed=elapsed
+            )
+        return 0
+
+    pairs: list[tuple[str, int]] = [(p, s) for p in args.problems for s in seeds]
     rows: list[BenchRow] = []
     t0 = time.time()
     if args.parallelism == 1:
@@ -510,6 +734,27 @@ def _maybe_notify(
             lines.append(f"  {problem}: mean={stats['mean']:.4f}")
         else:
             lines.append(f"  {problem}: N/A")
+    try:
+        notify("\n".join(lines), parse_mode="")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _maybe_notify_chain(
+    *, label: str, commit: str, rows: list[BenchRow], elapsed: float
+) -> None:
+    try:
+        from tools.telegram_notify import notify
+    except Exception:  # noqa: BLE001
+        return
+    agg = aggregate_results(rows)
+    lines = [f"Chain benchmark complete: {label} @ {commit} ({elapsed / 60:.0f} min)"]
+    for variant in CHAIN_VARIANTS:
+        stats = agg.get(variant.label)
+        if stats and stats.get("mean") is not None:
+            lines.append(f"  {variant.label}: mean={stats['mean']:.4f}")
+        else:
+            lines.append(f"  {variant.label}: N/A")
     try:
         notify("\n".join(lines), parse_mode="")
     except Exception:  # noqa: BLE001

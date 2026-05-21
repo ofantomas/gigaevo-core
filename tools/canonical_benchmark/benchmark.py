@@ -44,14 +44,58 @@ DEFAULT_NUM_PARENTS = 1
 
 
 @dataclass(frozen=True)
+class ChainVariant:
+    """One row of the chain benchmark matrix: a (problem, runner-preset) pair."""
+
+    label: str  # e.g. "hover_none_fast"
+    problem: str  # e.g. "chains/hover/static_soft"
+    runner: str  # e.g. "none" — selects config/chains/runner/<runner>.yaml
+
+
+# Mirrors the NeurIPS matrix from feat/carl-runner-implementation's
+# scripts/launch_experiments.py — 8 hover feedback×execution combos + 1 each for
+# ifbench / gsm8k / hotpotqa / aime. Task paths point at the paper's canonical
+# `chains/neurips_test/<task>/static` dirs so the benchmark matches the
+# pre-registered NeurIPS configuration. Labels match the original launcher.
+CHAIN_VARIANTS: tuple[ChainVariant, ...] = (
+    ChainVariant("hover_none_fast", "chains/neurips_test/hover/static", "none"),
+    ChainVariant("hover_simple_fast", "chains/neurips_test/hover/static", "simple"),
+    ChainVariant("hover_dataset_fast", "chains/neurips_test/hover/static", "dataset"),
+    ChainVariant("hover_metrics_fast", "chains/neurips_test/hover/static", "metrics"),
+    ChainVariant("hover_none_sc", "chains/neurips_test/hover/static", "self_critic"),
+    ChainVariant(
+        "hover_simple_sc", "chains/neurips_test/hover/static", "self_critic_simple"
+    ),
+    ChainVariant(
+        "hover_dataset_sc", "chains/neurips_test/hover/static", "self_critic_dataset"
+    ),
+    ChainVariant(
+        "hover_metrics_sc", "chains/neurips_test/hover/static", "self_critic_metrics"
+    ),
+    ChainVariant("ifbench_none_fast", "chains/neurips_test/ifbench/static", "none"),
+    ChainVariant("gsm8k_none_fast", "chains/neurips_test/gsm8k/static", "none"),
+    ChainVariant("hotpotqa_none_fast", "chains/neurips_test/hotpotqa/static", "none"),
+    ChainVariant("aime_none_fast", "chains/neurips_test/aime/static", "none"),
+)
+
+
+@dataclass(frozen=True)
 class BenchRow:
-    """One (problem, seed) result extracted via `gigaevo top -n 1`."""
+    """One (problem, seed) result extracted via `gigaevo top -n 1`.
+
+    ``variant_label`` is optional. For the standard 5-problem benchmark each
+    problem appears exactly once per seed so ``variant_label`` stays None and
+    aggregation groups on ``problem``. For the chain benchmark several variants
+    can share one ``problem`` (e.g. 8 hover variants only differ by runner
+    preset), so ``variant_label`` becomes the grouping key.
+    """
 
     problem: str
     seed: int
     fitness: float | None
     mutants_evaluated: int
     state: str  # "done" | "error" | "timeout" | "running"
+    variant_label: str | None = None
 
 
 def db_for(problem_idx: int, seed_idx: int) -> int:
@@ -66,6 +110,23 @@ def db_for(problem_idx: int, seed_idx: int) -> int:
     if not 0 <= seed_idx < len(SEEDS):
         raise ValueError(f"seed_idx {seed_idx} out of range [0, {len(SEEDS)})")
     return problem_idx * len(SEEDS) + seed_idx
+
+
+def chain_db_for(variant_idx: int, seed_idx: int = 0) -> int:
+    """Map a (chain_variant, seed) to a Redis DB in [0..15].
+
+    10 variants × 1 seed → DBs 0..9 (default). For seed_idx > 0 we need a
+    --reuse-dbs strategy in the caller because 10 × 2 = 20 > 16 (Redis caps at
+    16 DBs); the helper here still returns a deterministic db for variant_idx
+    so the caller can sequence runs through the same DB after a flush.
+    """
+    if not 0 <= variant_idx < len(CHAIN_VARIANTS):
+        raise ValueError(
+            f"variant_idx {variant_idx} out of range [0, {len(CHAIN_VARIANTS)})"
+        )
+    if seed_idx < 0:
+        raise ValueError(f"seed_idx {seed_idx} must be >= 0")
+    return variant_idx
 
 
 def build_run_command(
@@ -110,6 +171,39 @@ def build_run_command(
     if extra_overrides:
         cmd.extend(extra_overrides)
     return cmd
+
+
+def build_chain_run_command(
+    *,
+    python_exe: str,
+    variant: ChainVariant,
+    db: int,
+    output_dir: str,
+    llm_base_url: str,
+    model_name: str,
+    extra_overrides: Iterable[str] | None = None,
+) -> list[str]:
+    """Like ``build_run_command`` but adds ``chains/runner=<preset>``.
+
+    Chain tasks require selecting a runner preset from
+    ``config/chains/runner/*.yaml``; the preset emits the
+    ``GIGAEVO_CHAIN_RUNNER_CONFIG`` env var that the chain runner reads.
+    Everything else (pipeline, num_parents, max_mutants) still comes from
+    framework defaults so chain rows are reproducible from a single
+    ``problem.name`` + ``chains/runner`` pair.
+    """
+    overrides = [f"chains/runner={variant.runner}"]
+    if extra_overrides:
+        overrides.extend(extra_overrides)
+    return build_run_command(
+        python_exe=python_exe,
+        problem=variant.problem,
+        db=db,
+        output_dir=output_dir,
+        llm_base_url=llm_base_url,
+        model_name=model_name,
+        extra_overrides=overrides,
+    )
 
 
 def build_top_cmd(
@@ -158,14 +252,15 @@ def parse_top_n_fitness(stdout: str) -> float | None:
 
 
 def aggregate_results(rows: Iterable[BenchRow]) -> dict[str, dict]:
-    """Group rows by problem, compute mean/std/min/max over numeric fitness.
+    """Group rows by ``variant_label`` (when set) or ``problem`` otherwise.
 
     None fitness values are surfaced via `n_failed` but excluded from stats —
     they would otherwise NaN-poison the mean and corrupt the regression signal.
     """
     by_problem: dict[str, list[BenchRow]] = {}
     for row in rows:
-        by_problem.setdefault(row.problem, []).append(row)
+        key = row.variant_label or row.problem
+        by_problem.setdefault(key, []).append(row)
 
     out: dict[str, dict] = {}
     for problem, problem_rows in by_problem.items():
@@ -287,6 +382,101 @@ def format_results_markdown(
         for row in failed:
             lines.append(
                 f"- `{row.problem}@seed{row.seed}`: state={row.state}, "
+                f"mutants={row.mutants_evaluated}"
+            )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_chain_results_markdown(
+    *,
+    label: str,
+    commit: str,
+    timestamp: str,
+    rows: list[BenchRow],
+    seeds: Iterable[int],
+    extra_overrides: list[str] | None = None,
+    parallelism: int | None = None,
+) -> str:
+    """Render a markdown report for the chain benchmark matrix.
+
+    Rows are expected to carry ``variant_label`` so aggregation groups by
+    (problem, runner-preset) pair rather than just by problem.
+    """
+    agg = aggregate_results(rows)
+    failed = [r for r in rows if r.fitness is None]
+    seeds_list = list(seeds)
+
+    lines: list[str] = []
+    lines.append(f"## Chain benchmark — `{label}`")
+    lines.append("")
+    lines.append(f"- **Commit:** `{commit}`")
+    lines.append(f"- **Timestamp:** {timestamp}")
+    lines.append(
+        f"- **Config:** framework defaults — expected `pipeline=standard`, "
+        f"`num_parents={DEFAULT_NUM_PARENTS}`, `max_mutants={DEFAULT_MAX_MUTANTS}`, "
+        f"seeds={seeds_list}. (Spawn passes `problem.name`, `redis.db`, "
+        f"`hydra.run.dir`, `llm_base_url`, `model_name`, `chains/runner=<preset>` "
+        f"— see `tools/canonical_benchmark/README.md`.)"
+    )
+    if extra_overrides:
+        lines.append(f"- **Extra overrides:** `{' '.join(extra_overrides)}`")
+    if parallelism is not None:
+        lines.append(f"- **Parallelism:** {parallelism}")
+    lines.append("")
+
+    lines.append(f"### Aggregate (per variant, {len(seeds_list)} seed(s))")
+    lines.append("")
+    lines.append(
+        "| Variant | Problem | Runner | Mean | Std | Min | Max | n | n_failed |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
+    for variant in CHAIN_VARIANTS:
+        stats = agg.get(variant.label)
+        if stats is None:
+            lines.append(
+                f"| {variant.label} | {variant.problem} | {variant.runner} "
+                f"| N/A | N/A | N/A | N/A | 0 | 0 |"
+            )
+            continue
+        lines.append(
+            "| {v} | {p} | {r} | {m} | {s} | {lo} | {hi} | {n} | {nf} |".format(
+                v=variant.label,
+                p=variant.problem,
+                r=variant.runner,
+                m=_fmt(stats["mean"]),
+                s=_fmt(stats["std"]),
+                lo=_fmt(stats["min"]),
+                hi=_fmt(stats["max"]),
+                n=stats["n"],
+                nf=stats["n_failed"],
+            )
+        )
+    lines.append("")
+
+    lines.append("### Raw per-seed")
+    lines.append("")
+    lines.append("| Variant | Seed | DB | Fitness | Mutants | State |")
+    lines.append("|---|---|---|---|---|---|")
+    variant_idx_by_label = {v.label: i for i, v in enumerate(CHAIN_VARIANTS)}
+    for row in rows:
+        variant_label = row.variant_label or row.problem
+        variant_idx = variant_idx_by_label.get(variant_label, -1)
+        db = chain_db_for(variant_idx) if variant_idx >= 0 else -1
+        lines.append(
+            f"| {variant_label} | {row.seed} | {db} | {_fmt(row.fitness)} | "
+            f"{row.mutants_evaluated} | {row.state} |"
+        )
+
+    if failed:
+        lines.append("")
+        lines.append("### Failed extractions")
+        lines.append("")
+        for row in failed:
+            label_str = row.variant_label or row.problem
+            lines.append(
+                f"- `{label_str}@seed{row.seed}`: state={row.state}, "
                 f"mutants={row.mutants_evaluated}"
             )
 
