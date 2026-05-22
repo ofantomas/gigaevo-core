@@ -4,7 +4,9 @@
 Example:
     PYTHONPATH=. python tools/sella_energy_fitness_plot.py \
         --run full_sella_diff@6:full-sella-diff \
-        --output outputs/plots/full_sella_energy_fitness.png
+        --output outputs/plots/full_sella_energy_fitness.png \
+        --x-lower-lim 1.2 \
+        --x-upper-lim 2.0
 """
 
 from __future__ import annotations
@@ -130,6 +132,8 @@ def plot_energy_vs_fitness(
     title: str | None,
     subtitle: str | None,
     xlim: tuple[float, float] | None,
+    x_lower_lim: float | None,
+    x_upper_lim: float | None,
     ylim: tuple[float, float] | None,
     sentinel_cutoff: float,
     include_invalid: bool,
@@ -183,6 +187,10 @@ def plot_energy_vs_fitness(
 
     if xlim is not None:
         ax.set_xlim(*xlim)
+    if x_lower_lim is not None:
+        ax.set_xlim(left=x_lower_lim)
+    if x_upper_lim is not None:
+        ax.set_xlim(right=x_upper_lim)
     if ylim is not None:
         ax.set_ylim(*ylim)
 
@@ -270,12 +278,43 @@ async def async_main() -> None:
     parser.add_argument("--title")
     parser.add_argument("--subtitle")
     parser.add_argument("--xlim", help="Comma-separated bounds, e.g. 1.0,5.0")
+    parser.add_argument(
+        "--x-lower-lim",
+        "--x-lower-limit",
+        "--x-min",
+        "--xmin",
+        dest="x_lower_lim",
+        type=float,
+        help="Lower x-axis bound; keeps the upper bound automatic unless --xlim or --x-upper-lim is set.",
+    )
+    parser.add_argument(
+        "--x-upper-lim",
+        "--x-upper-limit",
+        "--x-max",
+        "--xmax",
+        dest="x_upper_lim",
+        type=float,
+        help="Upper x-axis bound; keeps the lower bound automatic unless --xlim or --x-lower-lim is set.",
+    )
     parser.add_argument("--ylim", help="Comma-separated bounds, e.g. 0.999,1.016")
     parser.add_argument("--sentinel-cutoff", type=float, default=999.0)
     parser.add_argument("--include-invalid", action="store_true")
     parser.add_argument("--point-size", type=float, default=28.0)
     parser.add_argument("--dpi", type=int, default=150)
     args = parser.parse_args()
+
+    xlim = _parse_bounds(args.xlim)
+    effective_xlo = args.x_lower_lim if args.x_lower_lim is not None else None
+    effective_xhi = args.x_upper_lim if args.x_upper_lim is not None else None
+    if xlim is not None:
+        effective_xlo = xlim[0] if effective_xlo is None else effective_xlo
+        effective_xhi = xlim[1] if effective_xhi is None else effective_xhi
+    if (
+        effective_xlo is not None
+        and effective_xhi is not None
+        and effective_xlo >= effective_xhi
+    ):
+        raise SystemExit("x-axis lower limit must be less than upper limit.")
 
     prefix, db, label = parse_run_arg(args.run)
     cfg = RedisRunConfig(
@@ -299,7 +338,9 @@ async def async_main() -> None:
         y_label=args.y_label,
         title=args.title,
         subtitle=args.subtitle,
-        xlim=_parse_bounds(args.xlim),
+        xlim=xlim,
+        x_lower_lim=args.x_lower_lim,
+        x_upper_lim=args.x_upper_lim,
         ylim=_parse_bounds(args.ylim),
         sentinel_cutoff=args.sentinel_cutoff,
         include_invalid=args.include_invalid,

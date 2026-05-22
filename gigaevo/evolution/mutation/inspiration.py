@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from loguru import logger
@@ -29,11 +30,10 @@ _EMPTY_CONTEXT = InspirationPromptContext(
 
 
 @dataclass(frozen=True)
-class _TransitionSelection:
-    analysis: Any | None
-    reason: str
-    improvement: float | None = None
-    skip_counts: Counter[str] | None = None
+class _TransitionCandidate:
+    analysis: Any
+    primary_effect: float
+    outcome: str
 
 
 def build_inspiration_prompt_context(
@@ -43,67 +43,72 @@ def build_inspiration_prompt_context(
     max_diff_hunks_per_card: int = 3,
     max_card_chars: int = 4000,
     source_stage_name: str = "LineageStage",
+    max_transitions_per_donor: int = 3,
 ) -> InspirationPromptContext:
-    """Format successful donor parent->child transitions for diff mutation prompts.
+    """Format donor parent->child transitions for diff mutation prompts.
 
-    A donor program contributes at most one card: its best successful transition
-    according to the primary metric. Programs without lineage output or without
-    a parent-relative improvement are skipped.
+    A donor program contributes up to ``max_transitions_per_donor`` cards.
+    Both improving and regressing nonzero primary-metric transitions are useful:
+    improvements suggest mechanisms to adapt, regressions provide counterexamples.
     """
-    if not programs:
+    if not programs or max_transitions_per_donor <= 0:
         return _EMPTY_CONTEXT
 
     formatter = MetricsFormatter(metrics_context)
     cards: list[str] = []
     program_ids: list[str] = []
     transition_ids: list[str] = []
-    selected_improvements: list[float] = []
+    selected_effects: list[float] = []
+    selected_outcomes: list[str] = []
     skip_counts: Counter[str] = Counter()
 
     for program in programs:
-        selection = _select_best_successful_transition_details(
+        candidates, donor_skip_counts = _collect_usable_transition_details(
             program, metrics_context, source_stage_name
         )
-        analysis = selection.analysis
-        if analysis is None:
-            skip_counts[selection.reason] += 1
-            if selection.skip_counts:
-                skip_counts.update(
-                    {
-                        f"analysis_{reason}": count
-                        for reason, count in selection.skip_counts.items()
-                    }
-                )
+        if donor_skip_counts:
+            skip_counts.update(
+                {
+                    f"analysis_{reason}": count
+                    for reason, count in donor_skip_counts.items()
+                }
+            )
+        if not candidates:
             continue
 
-        label = f"IT-{len(cards) + 1}"
-        card = _format_transition_card(
-            label,
-            program,
-            analysis,
-            metrics_formatter=formatter,
-            max_diff_hunks_per_card=max_diff_hunks_per_card,
-            max_card_chars=max_card_chars,
-        )
-        cards.append(card)
+        for candidate in candidates[:max_transitions_per_donor]:
+            analysis = candidate.analysis
+            label = f"IT-{len(cards) + 1}"
+            card = _format_transition_card(
+                label,
+                program,
+                analysis,
+                outcome=candidate.outcome,
+                primary_effect=candidate.primary_effect,
+                metrics_formatter=formatter,
+                max_diff_hunks_per_card=max_diff_hunks_per_card,
+                max_card_chars=max_card_chars,
+            )
+            cards.append(card)
 
-        from_id = str(_get(analysis, "from_id", _get(analysis, "from", "")))
-        to_id = str(_get(analysis, "to_id", _get(analysis, "to", program.id)))
-        program_ids.append(to_id)
-        transition_ids.append(f"{from_id}->{to_id}")
-        if selection.improvement is not None:
-            selected_improvements.append(selection.improvement)
+            from_id = str(_get(analysis, "from_id", _get(analysis, "from", "")))
+            to_id = str(_get(analysis, "to_id", _get(analysis, "to", program.id)))
+            program_ids.append(to_id)
+            transition_ids.append(f"{from_id}->{to_id}")
+            selected_effects.append(candidate.primary_effect)
+            selected_outcomes.append(candidate.outcome)
 
     logger.debug(
         "[inspiration] Rendered {} card(s) from {} donor(s) "
         "(primary_metric={}, higher_is_better={}); transitions={}; "
-        "improvements={}; skipped={}",
+        "primary_effects={}; outcomes={}; skipped={}",
         len(cards),
         len(programs),
         metrics_context.get_primary_key(),
         metrics_context.is_higher_better(metrics_context.get_primary_key()),
         transition_ids,
-        selected_improvements,
+        selected_effects,
+        selected_outcomes,
         dict(skip_counts),
     )
 
@@ -119,67 +124,62 @@ def build_inspiration_prompt_context(
     )
 
 
-def _select_best_successful_transition(
+def _collect_usable_transition_details(
     program: Program, metrics_context: MetricsContext, source_stage_name: str
-) -> Any | None:
-    return _select_best_successful_transition_details(
-        program, metrics_context, source_stage_name
-    ).analysis
-
-
-def _select_best_successful_transition_details(
-    program: Program, metrics_context: MetricsContext, source_stage_name: str
-) -> _TransitionSelection:
+) -> tuple[list[_TransitionCandidate], Counter[str]]:
     analyses = _lineage_analyses(program, source_stage_name)
+    skip_counts: Counter[str] = Counter()
     if not analyses:
-        return _TransitionSelection(
-            analysis=None,
-            reason="no_lineage_output",
-            skip_counts=Counter(),
-        )
+        skip_counts["no_lineage_output"] += 1
+        return [], skip_counts
 
     primary_key = metrics_context.get_primary_key()
     higher_is_better = metrics_context.is_higher_better(primary_key)
-    successful: list[tuple[float, Any]] = []
-    skip_counts: Counter[str] = Counter()
+    candidates: list[_TransitionCandidate] = []
 
     for analysis in analyses:
-        parent_metrics = _get(analysis, "parent_metrics", {}) or {}
-        child_metrics = _get(analysis, "child_metrics", {}) or {}
-        if primary_key not in parent_metrics or primary_key not in child_metrics:
-            skip_counts["missing_primary_metric"] += 1
+        primary_effect, reason = _directional_primary_effect(
+            analysis, primary_key, higher_is_better
+        )
+        if reason is not None:
+            skip_counts[reason] += 1
             continue
-
-        parent_value = float(parent_metrics[primary_key])
-        child_value = float(child_metrics[primary_key])
-        delta = child_value - parent_value
-        if delta == 0:
-            skip_counts["equal_primary_metric"] += 1
-            continue
-        if (delta > 0) != higher_is_better:
-            skip_counts["worse_primary_metric"] += 1
-            continue
-
-        improvement = delta if higher_is_better else -delta
-        successful.append((improvement, analysis))
-
-    if not successful:
-        reason = "no_improving_primary_metric"
-        if skip_counts:
-            reason = skip_counts.most_common(1)[0][0]
-        return _TransitionSelection(
-            analysis=None,
-            reason=reason,
-            skip_counts=skip_counts,
+        assert primary_effect is not None
+        outcome = "improvement" if primary_effect > 0 else "regression"
+        candidates.append(
+            _TransitionCandidate(
+                analysis=analysis,
+                primary_effect=primary_effect,
+                outcome=outcome,
+            )
         )
 
-    improvement, analysis = max(successful, key=lambda item: item[0])
-    return _TransitionSelection(
-        analysis=analysis,
-        reason="selected",
-        improvement=improvement,
-        skip_counts=skip_counts,
-    )
+    candidates.sort(key=lambda candidate: candidate.primary_effect)
+    return candidates, skip_counts
+
+
+def _directional_primary_effect(
+    analysis: Any, primary_key: str, higher_is_better: bool
+) -> tuple[float | None, str | None]:
+    parent_metrics = _get(analysis, "parent_metrics", {}) or {}
+    child_metrics = _get(analysis, "child_metrics", {}) or {}
+    if primary_key not in parent_metrics or primary_key not in child_metrics:
+        return None, "missing_primary_metric"
+
+    try:
+        parent_value = float(parent_metrics[primary_key])
+        child_value = float(child_metrics[primary_key])
+    except (TypeError, ValueError):
+        return None, "non_numeric_primary_metric"
+
+    if not math.isfinite(parent_value) or not math.isfinite(child_value):
+        return None, "non_finite_primary_metric"
+
+    delta = child_value - parent_value
+    primary_effect = delta if higher_is_better else -delta
+    if primary_effect == 0:
+        return None, "equal_primary_metric"
+    return primary_effect, None
 
 
 def _lineage_analyses(program: Program, source_stage_name: str) -> list[Any]:
@@ -199,6 +199,8 @@ def _format_transition_card(
     program: Program,
     analysis: Any,
     *,
+    outcome: str,
+    primary_effect: float,
     metrics_formatter: MetricsFormatter,
     max_diff_hunks_per_card: int,
     max_card_chars: int,
@@ -212,6 +214,7 @@ def _format_transition_card(
         f"### Inspiration Transition {label}",
         f"Transition: parent {from_id[:8]} -> child {to_id[:8]}",
         f"Full IDs: parent={from_id}, child={to_id}",
+        f"Outcome: {outcome} (direction-aware primary effect: {primary_effect:+.6g})",
         "",
         "Measured transition metrics:",
         metrics_formatter.format_delta_block(

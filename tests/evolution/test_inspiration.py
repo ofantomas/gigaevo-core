@@ -55,6 +55,12 @@ def _analysis(parent: Program, child: Program, *, parent_f: float, child_f: floa
     )
 
 
+def _attach_lineage(program: Program, analyses: list[object]) -> None:
+    program.stage_results["LineageStage"] = ProgramStageResult.success(
+        output={"analyses": analyses}
+    )
+
+
 def test_builds_card_from_successful_transition() -> None:
     parent = Program(code="def solve(): return 1")
     child = Program(code="def solve(): return 2")
@@ -82,11 +88,12 @@ def test_builds_card_from_successful_transition() -> None:
     assert context.program_ids == [child.id]
     assert context.transition_ids == [f"{parent.id}->{child.id}"]
     assert "### Inspiration Transition IT-1" in context.text
+    assert "Outcome: improvement" in context.text
     assert "Guided Innovation" in context.text
     assert "Donor diff hunk 1" in context.text
 
 
-def test_skips_missing_or_regressing_lineage() -> None:
+def test_renders_regressing_lineage_and_skips_missing_lineage() -> None:
     parent = Program(code="def solve(): return 1")
     child = Program(code="def solve(): return 2")
     child.stage_results["LineageStage"] = ProgramStageResult.success(
@@ -100,5 +107,108 @@ def test_skips_missing_or_regressing_lineage() -> None:
         [child, missing], metrics_context=_metrics_context()
     )
 
-    assert context.num_cards == 0
-    assert context.text == ""
+    assert context.num_cards == 1
+    assert context.program_ids == [child.id]
+    assert context.transition_ids == [f"{parent.id}->{child.id}"]
+    assert "Outcome: regression" in context.text
+
+
+def test_lower_is_better_labels_improvement_and_regression() -> None:
+    parent = Program(code="def solve(): return 1")
+    child = Program(code="def solve(): return 2")
+    worse_parent = Program(code="def solve(): return 3")
+
+    _attach_lineage(
+        child,
+        [
+            _analysis(parent, child, parent_f=2.0, child_f=1.0),
+            _analysis(worse_parent, child, parent_f=1.0, child_f=2.0),
+        ],
+    )
+
+    context = build_inspiration_prompt_context(
+        [child], metrics_context=_metrics_context(higher_is_better=False)
+    )
+
+    assert context.num_cards == 2
+    assert context.text.count("Outcome: improvement") == 1
+    assert context.text.count("Outcome: regression") == 1
+
+
+def test_renders_at_most_three_transitions_per_donor_sorted_by_effect() -> None:
+    child = Program(code="def solve(): return 2")
+    parents = [Program(code=f"def solve(): return {i}") for i in range(4)]
+    _attach_lineage(
+        child,
+        [
+            _analysis(parents[0], child, parent_f=10.0, child_f=5.0),
+            _analysis(parents[1], child, parent_f=6.0, child_f=5.0),
+            _analysis(parents[2], child, parent_f=3.0, child_f=5.0),
+            _analysis(parents[3], child, parent_f=1.0, child_f=5.0),
+        ],
+    )
+
+    context = build_inspiration_prompt_context(
+        [child], metrics_context=_metrics_context()
+    )
+
+    assert context.num_cards == 3
+    assert context.transition_ids == [
+        f"{parents[0].id}->{child.id}",
+        f"{parents[1].id}->{child.id}",
+        f"{parents[2].id}->{child.id}",
+    ]
+    assert context.text.count("Outcome: regression") == 2
+    assert context.text.count("Outcome: improvement") == 1
+
+
+def test_skips_missing_non_finite_and_zero_primary_metric_changes() -> None:
+    child = Program(code="def solve(): return 2")
+    valid_parent = Program(code="def solve(): return 1")
+    zero_parent = Program(code="def solve(): return 0")
+    missing_parent = Program(code="def solve(): return 3")
+    non_finite_parent = Program(code="def solve(): return 4")
+    bad_parent = Program(code="def solve(): return 5")
+
+    _attach_lineage(
+        child,
+        [
+            _analysis(valid_parent, child, parent_f=1.0, child_f=2.0),
+            _analysis(zero_parent, child, parent_f=2.0, child_f=2.0),
+            {
+                "from_id": missing_parent.id,
+                "to_id": child.id,
+                "parent_metrics": {"mean_rel_energy": 1.0},
+                "child_metrics": {"fitness": 3.0, "mean_rel_energy": 1.0},
+                "diff_blocks": [],
+                "insights": {"insights": []},
+            },
+            {
+                "from_id": non_finite_parent.id,
+                "to_id": child.id,
+                "parent_metrics": {"fitness": float("nan"), "mean_rel_energy": 1.0},
+                "child_metrics": {"fitness": 3.0, "mean_rel_energy": 1.0},
+                "diff_blocks": [],
+                "insights": {"insights": []},
+            },
+            {
+                "from_id": bad_parent.id,
+                "to_id": child.id,
+                "parent_metrics": {
+                    "fitness": "not-a-number",
+                    "mean_rel_energy": 1.0,
+                },
+                "child_metrics": {"fitness": 3.0, "mean_rel_energy": 1.0},
+                "diff_blocks": [],
+                "insights": {"insights": []},
+            },
+        ],
+    )
+
+    context = build_inspiration_prompt_context(
+        [child], metrics_context=_metrics_context()
+    )
+
+    assert context.num_cards == 1
+    assert context.transition_ids == [f"{valid_parent.id}->{child.id}"]
+    assert "Outcome: improvement" in context.text

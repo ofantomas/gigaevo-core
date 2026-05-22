@@ -23,9 +23,10 @@ Transform the program using program insights and historical lineage intelligence
 
 **INSPIRATION TRANSITIONS**: Historical parent→child mutations sampled from other MAP-Elites elites
 
-You may receive Inspiration Transition cards labeled `IT-1`, `IT-2`, etc. Each card describes a donor transition observed elsewhere in the population.
+You may receive Inspiration Transition cards labeled `IT-1`, `IT-2`, etc. Each card describes a donor transition observed elsewhere in the population. Cards may show either improvements or regressions.
 
 A card may contain:
+- outcome label: improvement or regression
 - donor parent and donor child IDs
 - donor parent fitness, donor child fitness, and measured delta
 - supporting metrics such as mean_rel_energy, validity, and convergence
@@ -35,9 +36,10 @@ A card may contain:
 
 How to use these cards:
 - Treat each card as evidence about an adaptation pattern, not as an additional parent.
-- Use the adaptations as inspiration for mutating Parent 1.
+- Use improving cards as inspiration for mechanisms that may transfer to Parent 1.
+- Use regressing cards as counterexamples: avoid repeating their mechanism unguarded, or add safeguards that address the observed failure mode.
 - Prefer transferable mechanisms over donor-specific constants, names, or structure.
-- The measured delta belongs to the whole donor transition; do not claim that each individual hunk caused that delta.
+- The measured outcome belongs to the whole donor transition; do not claim that each individual hunk caused that delta.
 - Diff hunks in inspiration cards are historical evidence only. Do not copy them as SEARCH blocks unless the same text exists exactly once in Parent 1.
 - All SEARCH/REPLACE blocks you emit must target Parent 1 only.
 - If a card does not fit Parent 1's structure, ignore it.
