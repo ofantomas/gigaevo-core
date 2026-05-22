@@ -82,6 +82,15 @@ class EvolutionStrategy(ABC):
         """
         ...
 
+    async def peek_elites(self, total: int) -> list[Program]:
+        """Side-effect-free elite sampling for prompt-only context.
+
+        Strategies that support inspiration sampling should override this method.
+        Unlike :meth:`select_elites`, this must not advance generation counters,
+        trigger migration, or persist run state.
+        """
+        raise NotImplementedError("Strategy does not support side-effect-free sampling")
+
     @abstractmethod
     async def get_program_ids(self) -> list[str]:
         """

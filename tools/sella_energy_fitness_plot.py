@@ -224,7 +224,12 @@ def plot_energy_vs_fitness(
     ax.set_xlabel(x_label, fontsize=12)
     ax.set_ylabel(y_label, fontsize=12)
     ax.grid(True, alpha=0.25)
-    ax.legend(loc="lower left", framealpha=0.82, fontsize=10)
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.995),
+        framealpha=0.82,
+        fontsize=10,
+    )
 
     cbar = fig.colorbar(sc, ax=ax, pad=0.02)
     cbar.set_label(color_label, rotation=270, labelpad=22)

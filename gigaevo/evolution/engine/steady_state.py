@@ -76,8 +76,9 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
         self._epoch_mutants = 0  # mutants produced in current epoch (for logging)
         self._epoch_eligible_since: float | None = None  # low-watermark fallback timer
 
-        # Cached elites (refreshed at epoch boundaries)
+        # Cached elites and inspiration candidates (refreshed at epoch boundaries)
         self._cached_elites: list[Program] | None = None
+        self._cached_inspiration_candidates: list[Program] | None = None
         self._elite_cache_lock = asyncio.Lock()
 
         # Child tasks
@@ -265,8 +266,25 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
                 self._cached_elites = await self._select_elites_for_mutation()
             return self._cached_elites
 
+    async def _get_cached_inspiration_candidates(self) -> list[Program]:
+        """Return epoch-cached inspiration candidates for diff-mode mutation."""
+        if not self._diff_inspiration_enabled():
+            return []
+        if self._cached_inspiration_candidates is not None:
+            return self._cached_inspiration_candidates
+        async with self._elite_cache_lock:
+            if self._cached_inspiration_candidates is None:
+                self._cached_inspiration_candidates = (
+                    await self._select_inspiration_candidates()
+                )
+            return self._cached_inspiration_candidates
+
     async def _create_single_mutant(self, elites: list[Program]) -> list[str]:
         """Create a single mutant from *elites*. Returns 0 or 1 IDs."""
+        inspiration_candidates = await self._get_cached_inspiration_candidates()
+        inspiration_selections = self._build_inspiration_selections(
+            inspiration_candidates, limit=1
+        )
         mutation_ids = await generate_mutations(
             elites,
             mutator=self.mutation_operator,
@@ -275,6 +293,11 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
             parent_selector=self.config.parent_selector,
             limit=1,
             iteration=self.metrics.total_generations,  # current epoch
+            inspiration_selections=inspiration_selections,
+            inspiration_max_diff_hunks_per_card=(
+                self.config.inspiration.max_diff_hunks_per_card
+            ),
+            inspiration_max_card_chars=self.config.inspiration.max_card_chars,
         )
         if mutation_ids:
             self.metrics.record_mutation_metrics(len(mutation_ids), 0)
@@ -558,6 +581,9 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
             # Pre-warm elite cache so mutation tasks don't thundering-herd
             # behind _elite_cache_lock when the gate opens.
             self._cached_elites = await self._select_elites_for_mutation()
+            self._cached_inspiration_candidates = (
+                await self._select_inspiration_candidates()
+            )
             self._mutation_gate.set()
 
             # 8. Wait for refresh DAGs + reindex (mutations continue)
@@ -611,6 +637,7 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
                 self._processed_since_epoch = 0
                 self._epoch_mutants = 0
                 self._cached_elites = None
+                self._cached_inspiration_candidates = None
                 self._mutation_gate.set()
 
     # ------------------------------------------------------------------

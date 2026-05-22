@@ -12,6 +12,28 @@ from gigaevo.evolution.mutation.parent_selector import (
 )
 
 
+class InspirationConfig(BaseModel):
+    """Configuration for diff-mode inspiration transition cards."""
+
+    enabled: bool = Field(default=False)
+    total_candidates: int = Field(
+        default=5,
+        gt=0,
+        description="Number of MAP-Elites samples to consider as inspiration donors.",
+    )
+    num_inspirations: int = Field(
+        default=2,
+        gt=0,
+        description="Number of inspiration donor programs per mutation prompt.",
+    )
+    max_diff_hunks_per_card: int = Field(default=3, gt=0)
+    max_card_chars: int = Field(
+        default=4000,
+        gt=0,
+        description="Maximum rendered characters per inspiration transition card.",
+    )
+
+
 class EngineConfig(BaseModel):
     """Configuration options controlling EvolutionEngine behaviour."""
 
@@ -37,6 +59,10 @@ class EngineConfig(BaseModel):
     program_acceptor: ProgramEvolutionAcceptor = Field(
         default_factory=lambda: DefaultProgramEvolutionAcceptor(),
         description="Acceptor for determining if programs should be accepted for evolution",
+    )
+    inspiration: InspirationConfig = Field(
+        default_factory=InspirationConfig,
+        description="Optional diff-mode inspiration sampling and prompt context.",
     )
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

@@ -701,6 +701,90 @@ class TestGenerateMutations:
         # Parent lineage updated for each mutation
         assert state_manager.update_program.call_count == 3
 
+    async def test_diff_mutator_receives_filtered_inspirations(self) -> None:
+        """generate_mutations filters the actual parent from inspiration sets."""
+        from gigaevo.evolution.engine.mutation import generate_mutations
+        from gigaevo.evolution.mutation.parent_selector import RandomParentSelector
+
+        class DiffMutator:
+            mutation_mode = "diff"
+
+            def __init__(self):
+                self.received_inspirations = None
+
+            async def mutate_single(self, parents):
+                return MutationSpec(
+                    code="def solve(): return 0", parents=parents, name="plain"
+                )
+
+            async def mutate_single_with_inspirations(self, parents, inspirations, **_):
+                self.received_inspirations = inspirations
+                return MutationSpec(
+                    code="def solve(): return 1", parents=parents, name="inspired"
+                )
+
+        storage = AsyncMock()
+        state_manager = AsyncMock()
+        parent = _prog(ProgramState.DONE)
+        inspiration = _prog(ProgramState.DONE)
+        storage.get.return_value = parent
+        mutator = DiffMutator()
+
+        ids = await generate_mutations(
+            [parent],
+            mutator=mutator,
+            storage=storage,
+            state_manager=state_manager,
+            parent_selector=RandomParentSelector(num_parents=1),
+            limit=1,
+            iteration=0,
+            inspiration_selections=[[parent, inspiration]],
+        )
+
+        assert len(ids) == 1
+        assert mutator.received_inspirations == [inspiration]
+
+    async def test_rewrite_mutator_ignores_inspirations(self) -> None:
+        """Inspiration sets are ignored unless the mutator is in diff mode."""
+        from gigaevo.evolution.engine.mutation import generate_mutations
+        from gigaevo.evolution.mutation.parent_selector import RandomParentSelector
+
+        class RewriteMutator:
+            mutation_mode = "rewrite"
+
+            def __init__(self):
+                self.inspiration_called = False
+
+            async def mutate_single(self, parents):
+                return MutationSpec(
+                    code="def solve(): return 1", parents=parents, name="rewrite"
+                )
+
+            async def mutate_single_with_inspirations(self, parents, inspirations, **_):
+                self.inspiration_called = True
+                return await self.mutate_single(parents)
+
+        storage = AsyncMock()
+        state_manager = AsyncMock()
+        parent = _prog(ProgramState.DONE)
+        inspiration = _prog(ProgramState.DONE)
+        storage.get.return_value = parent
+        mutator = RewriteMutator()
+
+        ids = await generate_mutations(
+            [parent],
+            mutator=mutator,
+            storage=storage,
+            state_manager=state_manager,
+            parent_selector=RandomParentSelector(num_parents=1),
+            limit=1,
+            iteration=0,
+            inspiration_selections=[[inspiration]],
+        )
+
+        assert len(ids) == 1
+        assert mutator.inspiration_called is False
+
     async def test_none_mutation_spec_is_skipped(self) -> None:
         """If mutator returns None, the mutation is not persisted."""
         from gigaevo.evolution.engine.mutation import generate_mutations

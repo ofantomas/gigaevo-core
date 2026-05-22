@@ -9,3 +9,9 @@ mutation_mode: rewrite
 max_generations: null
 strip_comments_and_docstrings: false
 pre_step_hook: null
+inspiration:
+  enabled: false
+  total_candidates: 5
+  num_inspirations: 2
+  max_diff_hunks_per_card: 3
+  max_card_chars: 4000

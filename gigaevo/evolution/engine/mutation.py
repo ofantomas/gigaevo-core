@@ -10,8 +10,38 @@ from gigaevo.evolution.mutation.base import MutationOperator, MutationSpec
 from gigaevo.evolution.mutation.constants import (
     MUTATION_MEMORY_SELECTED_IDS_METADATA_KEY,
 )
-from gigaevo.evolution.mutation.parent_selector import ParentSelector
+from gigaevo.evolution.mutation.parent_selector import (
+    AllCombinationsParentSelector,
+    ParentSelector,
+)
 from gigaevo.programs.program import Program
+
+
+def build_inspiration_selections(
+    candidates: list[Program],
+    *,
+    num_inspirations: int,
+    limit: int,
+) -> list[list[Program]]:
+    """Build shuffled inspiration combinations from sampled MAP-Elites candidates."""
+    if not candidates or num_inspirations <= 0 or limit <= 0:
+        return []
+
+    selector = AllCombinationsParentSelector(num_parents=num_inspirations)
+    selections: list[list[Program]] = []
+    for inspirations in selector.create_parent_iterator(candidates):
+        if len(selections) >= limit:
+            break
+        selections.append(inspirations)
+    logger.debug(
+        "[mutation] Built {} inspiration selection(s) from {} candidate(s) "
+        "(num_inspirations={}, limit={})",
+        len(selections),
+        len(candidates),
+        num_inspirations,
+        limit,
+    )
+    return selections
 
 
 async def generate_mutations(
@@ -23,6 +53,9 @@ async def generate_mutations(
     parent_selector: ParentSelector,
     limit: int,
     iteration: int,
+    inspiration_selections: list[list[Program]] | None = None,
+    inspiration_max_diff_hunks_per_card: int = 3,
+    inspiration_max_card_chars: int = 4000,
 ) -> list[str]:
     """Generate at most *limit* mutations from *elites* and persist them immediately.
 
@@ -54,6 +87,29 @@ async def generate_mutations(
             len(parent_selections),
         )
 
+        inspiration_method = getattr(mutator, "mutate_single_with_inspirations", None)
+        has_explicit_inspiration_method = hasattr(
+            type(mutator), "mutate_single_with_inspirations"
+        )
+        can_use_inspirations = (
+            getattr(mutator, "mutation_mode", None) == "diff"
+            and bool(inspiration_selections)
+            and has_explicit_inspiration_method
+            and callable(inspiration_method)
+        )
+        if inspiration_selections:
+            logger.debug(
+                "[mutation] Inspiration path {} (mode={}, selections={}, "
+                "explicit_method={}, callable_method={}, max_hunks={}, max_chars={})",
+                "enabled" if can_use_inspirations else "disabled",
+                getattr(mutator, "mutation_mode", None),
+                len(inspiration_selections),
+                has_explicit_inspiration_method,
+                callable(inspiration_method),
+                inspiration_max_diff_hunks_per_card,
+                inspiration_max_card_chars,
+            )
+
         async def generate_and_persist_mutation(
             parents: list[Program], task_id: int
         ) -> str | None:
@@ -66,7 +122,42 @@ async def generate_mutations(
             """
             persisted_id: str | None = None
             try:
-                mutation_spec = await mutator.mutate_single(parents)
+                if can_use_inspirations and inspiration_selections:
+                    raw_inspirations = inspiration_selections[
+                        task_id % len(inspiration_selections)
+                    ]
+                    parent_ids = {parent.id for parent in parents}
+                    task_inspirations = [
+                        p for p in raw_inspirations if p.id not in parent_ids
+                    ]
+                    logger.debug(
+                        "[mutation] Task {} inspiration filter: parents={} raw={} "
+                        "usable={} filtered_parent_ids={}",
+                        task_id,
+                        [parent.id for parent in parents],
+                        [program.id for program in raw_inspirations],
+                        [program.id for program in task_inspirations],
+                        [
+                            program.id
+                            for program in raw_inspirations
+                            if program.id in parent_ids
+                        ],
+                    )
+                    if task_inspirations:
+                        mutation_spec = await inspiration_method(
+                            parents,
+                            task_inspirations,
+                            max_diff_hunks_per_card=inspiration_max_diff_hunks_per_card,
+                            max_card_chars=inspiration_max_card_chars,
+                        )
+                    else:
+                        logger.debug(
+                            "[mutation] Task {} inspiration skipped after parent filtering",
+                            task_id,
+                        )
+                        mutation_spec = await mutator.mutate_single(parents)
+                else:
+                    mutation_spec = await mutator.mutate_single(parents)
 
                 if mutation_spec is None:
                     logger.debug(

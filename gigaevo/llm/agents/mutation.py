@@ -59,6 +59,13 @@ class MutationStructuredOutput(BaseModel):
         default_factory=list,
         description="Flat list of insight strings that were acted on (verbatim from input)",
     )
+    inspirations_used: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Inspiration Transition card IDs that influenced the mutation, "
+            "for example ['IT-1', 'IT-3']."
+        ),
+    )
     changes: list[MutationChange] = Field(
         default_factory=list,
         description=(
@@ -130,6 +137,8 @@ class MutationState(TypedDict):
     llm_response: Any
     final_code: str
     mutation_label: str
+    # Optional context injected only for diff-mode inspiration cards.
+    inspiration_context: NotRequired[str]
     # Fields set during prompt building (optional initially)
     system_prompt: NotRequired[str]
     user_prompt: NotRequired[str]
@@ -256,12 +265,18 @@ class MutationAgent(LangGraphAgent):
         except Exception as exc:
             logger.debug(f"[MutationAgent] prompt dump failed: {exc}")
 
-    async def arun(self, input: list[Program], mutation_mode: str) -> dict:
+    async def arun(
+        self,
+        input: list[Program],
+        mutation_mode: str,
+        inspiration_context: str | None = None,
+    ) -> dict:
         """Execute mutation agent.
 
         Args:
             input: List of parent programs to mutate
             mutation_mode: Mutation mode
+            inspiration_context: Optional rendered Inspiration Transition cards.
 
         Returns:
             Dict with 'code', 'structured_output', 'prompt_id', and other results
@@ -274,6 +289,8 @@ class MutationAgent(LangGraphAgent):
             "final_code": "",
             "mutation_label": "",
         }
+        if inspiration_context and mutation_mode == "diff":
+            initial_state["inspiration_context"] = inspiration_context
 
         final_state = await self.graph.ainvoke(initial_state)
         result = final_state.get("parsed_output", {})
@@ -404,7 +421,9 @@ class MutationAgent(LangGraphAgent):
             state["prompt_id"] = None
 
         parents = state["input"]
-        user_prompt = self.build_user_prompt(parents)
+        user_prompt = self.build_user_prompt(
+            parents, inspiration_context=state.get("inspiration_context", "")
+        )
 
         # Store prompts in state for logging
         state["system_prompt"] = self.system_prompt
@@ -431,12 +450,20 @@ class MutationAgent(LangGraphAgent):
 
         return state
 
-    def build_user_prompt(self, parents: list[Program]) -> str:
+    def build_user_prompt(
+        self, parents: list[Program], inspiration_context: str | None = None
+    ) -> str:
         """Build the mutation user prompt for a set of parents."""
         parent_blocks = self._build_parent_blocks(parents)
         memory_block = self._build_memory_block(parents)
         if memory_block:
             parent_blocks = f"{parent_blocks}\n\n{memory_block}"
+        if (
+            self.mutation_mode == "diff"
+            and inspiration_context
+            and inspiration_context.strip()
+        ):
+            parent_blocks = f"{parent_blocks}\n\n{inspiration_context.strip()}"
         prompt_fields = MutationPromptFields(
             count=len(parents), parent_blocks=parent_blocks
         )
@@ -547,6 +574,7 @@ class MutationAgent(LangGraphAgent):
                 "archetype": structured_output.archetype,
                 "justification": structured_output.justification,
                 "insights_used": structured_output.insights_used,
+                "inspirations_used": structured_output.inspirations_used,
                 "changes": structured_output.changes,
                 "model_used": model_used,
             }

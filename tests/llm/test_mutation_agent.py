@@ -339,6 +339,36 @@ class TestBuildPrompt:
         assert user_content.startswith("Process 1 programs.")
         assert user_content.endswith("Done.")
 
+    def test_inspiration_context_appended(self):
+        """Optional inspiration context appears after the parent block."""
+        agent = _make_agent(mutation_mode="diff")
+        parent = _make_program(metadata={MUTATION_CONTEXT_METADATA_KEY: "parent ctx"})
+        state = _make_state(
+            parents=[parent],
+            inspiration_context="## Inspiration Transitions\n\n### Inspiration Transition IT-1",
+        )
+
+        result = agent.build_prompt(state)
+
+        user_content = result["messages"][1].content
+        assert "parent ctx" in user_content
+        assert "### Inspiration Transition IT-1" in user_content
+
+    def test_rewrite_prompt_ignores_inspiration_context(self):
+        """Rewrite prompts never receive inspiration cards."""
+        agent = _make_agent(mutation_mode="rewrite")
+        parent = _make_program(metadata={MUTATION_CONTEXT_METADATA_KEY: "parent ctx"})
+        state = _make_state(
+            parents=[parent],
+            inspiration_context="## Inspiration Transitions\n\n### Inspiration Transition IT-1",
+        )
+
+        result = agent.build_prompt(state)
+
+        user_content = result["messages"][1].content
+        assert "parent ctx" in user_content
+        assert "### Inspiration Transition IT-1" not in user_content
+
 
 # ---------------------------------------------------------------------------
 # TestParseResponse
@@ -366,6 +396,7 @@ class TestParseResponse:
             == "Improved via targeted mutation."
         )
         assert result["parsed_output"]["insights_used"] == ["insight_a"]
+        assert result["parsed_output"]["inspirations_used"] == []
 
     def test_diff_mode(self):
         """In diff mode, the code field is treated as SEARCH/REPLACE blocks."""
@@ -606,6 +637,7 @@ class TestMutationStructuredOutput:
             code="print(1)",
         )
         assert out.insights_used == []
+        assert out.inspirations_used == []
         assert out.changes == []
 
     def test_model_dump(self):
@@ -616,6 +648,7 @@ class TestMutationStructuredOutput:
             "archetype",
             "justification",
             "insights_used",
+            "inspirations_used",
             "changes",
             "code",
         }

@@ -15,6 +15,7 @@ engine_config:
   max_generations: ${max_generations}
   program_acceptor: ${program_acceptor}
   parent_selector: ${parent_selector}
+  inspiration: ${inspiration}
   max_in_flight: 16
 
 # Override engine target

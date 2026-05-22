@@ -204,6 +204,27 @@ class TestMultiIslandSelectElites:
         await multi.select_elites(total=10)  # large quota ensures both islands called
         storage.save_run_state.assert_called()
 
+    async def test_peek_elites_samples_without_run_state_side_effects(self):
+        multi, islands, storage = _make_multi_island(
+            n=1, migration_interval=1, enable_migration=True
+        )
+        prog = _prog()
+        islands["island_0"].select_elites = AsyncMock(return_value=[prog])
+        multi.generation = 1
+        multi.last_migration = 0
+        multi._perform_migration = AsyncMock()
+        multi._enforce_all_island_size_limits = AsyncMock()
+
+        result = await multi.peek_elites(total=1)
+
+        assert result == [prog]
+        islands["island_0"].select_elites.assert_called_once_with(1)
+        multi._perform_migration.assert_not_called()
+        multi._enforce_all_island_size_limits.assert_not_called()
+        assert multi.generation == 1
+        assert multi.last_migration == 0
+        storage.save_run_state.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # select_migrants()

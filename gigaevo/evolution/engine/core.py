@@ -13,7 +13,10 @@ from gigaevo.database.state_manager import ProgramStateManager
 from gigaevo.evolution.engine.config import EngineConfig
 from gigaevo.evolution.engine.hooks import NullPostRunHook, PostRunHook
 from gigaevo.evolution.engine.metrics import EngineMetrics
-from gigaevo.evolution.engine.mutation import generate_mutations
+from gigaevo.evolution.engine.mutation import (
+    build_inspiration_selections,
+    generate_mutations,
+)
 from gigaevo.evolution.mutation.base import MutationOperator
 from gigaevo.evolution.mutation.mutation_operator import (
     LLMMutationOperator,
@@ -383,12 +386,72 @@ class EvolutionEngine:
         self.metrics.record_elite_selection_metrics(len(elites), 0)
         return elites
 
+    def _diff_inspiration_enabled(self) -> bool:
+        return (
+            self.config.inspiration.enabled
+            and getattr(self.mutation_operator, "mutation_mode", None) == "diff"
+        )
+
+    async def _select_inspiration_candidates(self) -> list[Program]:
+        if not self._diff_inspiration_enabled():
+            return []
+
+        try:
+            candidates = await self.strategy.peek_elites(
+                total=self.config.inspiration.total_candidates
+            )
+        except NotImplementedError:
+            logger.warning(
+                "[EvolutionEngine] Inspiration sampling requested but strategy "
+                "does not support peek_elites(); continuing without inspirations"
+            )
+            return []
+
+        logger.debug(
+            "[EvolutionEngine] gen={} Inspiration candidates selected: {}/{} ids={}",
+            self.metrics.total_generations,
+            len(candidates),
+            self.config.inspiration.total_candidates,
+            [program.id for program in candidates],
+        )
+        return candidates
+
+    def _build_inspiration_selections(
+        self, candidates: list[Program], *, limit: int
+    ) -> list[list[Program]]:
+        if not candidates or not self._diff_inspiration_enabled():
+            return []
+        selections = build_inspiration_selections(
+            candidates,
+            num_inspirations=self.config.inspiration.num_inspirations,
+            limit=limit,
+        )
+        logger.debug(
+            "[EvolutionEngine] gen={} Inspiration selections built: {} from {} "
+            "candidate(s) (num_inspirations={}, limit={})",
+            self.metrics.total_generations,
+            len(selections),
+            len(candidates),
+            self.config.inspiration.num_inspirations,
+            limit,
+        )
+        return selections
+
+    async def _select_inspiration_selections(
+        self, *, limit: int
+    ) -> list[list[Program]]:
+        candidates = await self._select_inspiration_candidates()
+        return self._build_inspiration_selections(candidates, limit=limit)
+
     async def _create_mutants(self, elites: list[Program]) -> list[str]:
         """Create mutants and return their program IDs."""
         logger.debug(
             "[EvolutionEngine] gen={} Mutate from {} elite(s)",
             self.metrics.total_generations,
             len(elites),
+        )
+        inspiration_selections = await self._select_inspiration_selections(
+            limit=self.config.max_mutations_per_generation
         )
         mutation_ids = await generate_mutations(
             elites,
@@ -398,6 +461,11 @@ class EvolutionEngine:
             parent_selector=self.config.parent_selector,
             limit=self.config.max_mutations_per_generation,
             iteration=self.metrics.total_generations,
+            inspiration_selections=inspiration_selections,
+            inspiration_max_diff_hunks_per_card=(
+                self.config.inspiration.max_diff_hunks_per_card
+            ),
+            inspiration_max_card_chars=self.config.inspiration.max_card_chars,
         )
 
         self.metrics.record_mutation_metrics(len(mutation_ids), 0)

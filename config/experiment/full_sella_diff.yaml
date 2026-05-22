@@ -23,6 +23,13 @@ max_code_length: 200000
 max_generations: null
 max_concurrent_dags: 5
 
+inspiration:
+  enabled: true
+  total_candidates: 5
+  num_inspirations: 2
+  max_diff_hunks_per_card: 3
+  max_card_chars: 4000
+
 problem:
   name: full_sella_diff
   dir: /home/tsypin/opt_problem

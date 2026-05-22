@@ -9,7 +9,11 @@ from loguru import logger
 from gigaevo.evolution.mutation.base import MutationOperator, MutationSpec
 from gigaevo.evolution.mutation.constants import (
     MUTATION_CONTEXT_METADATA_KEY,
+    MUTATION_INSPIRATION_NUM_CARDS_METADATA_KEY,
+    MUTATION_INSPIRATION_PROGRAM_IDS_METADATA_KEY,
+    MUTATION_INSPIRATION_TRANSITION_IDS_METADATA_KEY,
 )
+from gigaevo.evolution.mutation.inspiration import build_inspiration_prompt_context
 from gigaevo.evolution.mutation.utils import _DocstringRemover
 from gigaevo.exceptions import MutationError
 from gigaevo.llm.agents.factories import create_mutation_agent
@@ -113,6 +117,69 @@ class LLMMutationOperator(MutationOperator):
         Returns:
             MutationSpec if successful, None if no mutation could be generated
         """
+        return await self._mutate_single(selected_parents)
+
+    async def mutate_single_with_inspirations(
+        self,
+        selected_parents: list[Program],
+        inspirations: list[Program],
+        *,
+        max_diff_hunks_per_card: int = 3,
+        max_card_chars: int = 4000,
+    ) -> MutationSpec | None:
+        """Generate a diff mutation with non-parent inspiration transition cards."""
+        if self.mutation_mode != "diff" or not inspirations:
+            return await self._mutate_single(selected_parents)
+
+        parent_ids = {parent.id for parent in selected_parents}
+        filtered_inspirations = [p for p in inspirations if p.id not in parent_ids]
+        logger.debug(
+            "[LLMMutationOperator] Inspiration donors received: parents={} raw={} "
+            "filtered={}",
+            [parent.id for parent in selected_parents],
+            [program.id for program in inspirations],
+            [program.id for program in filtered_inspirations],
+        )
+        context = build_inspiration_prompt_context(
+            filtered_inspirations,
+            metrics_context=self.metrics_context,
+            max_diff_hunks_per_card=max_diff_hunks_per_card,
+            max_card_chars=max_card_chars,
+        )
+
+        inspiration_metadata: dict[str, object] = {}
+        if context.num_cards:
+            inspiration_metadata = {
+                MUTATION_INSPIRATION_PROGRAM_IDS_METADATA_KEY: context.program_ids,
+                MUTATION_INSPIRATION_TRANSITION_IDS_METADATA_KEY: context.transition_ids,
+                MUTATION_INSPIRATION_NUM_CARDS_METADATA_KEY: context.num_cards,
+            }
+            logger.debug(
+                "[LLMMutationOperator] Injecting {} inspiration transition card(s); "
+                "program_ids={}; transition_ids={}",
+                context.num_cards,
+                context.program_ids,
+                context.transition_ids,
+            )
+        else:
+            logger.debug(
+                "[LLMMutationOperator] No inspiration cards rendered from {} donor(s)",
+                len(filtered_inspirations),
+            )
+
+        return await self._mutate_single(
+            selected_parents,
+            inspiration_context=context.text,
+            inspiration_metadata=inspiration_metadata,
+        )
+
+    async def _mutate_single(
+        self,
+        selected_parents: list[Program],
+        *,
+        inspiration_context: str | None = None,
+        inspiration_metadata: dict[str, object] | None = None,
+    ) -> MutationSpec | None:
         if not selected_parents:
             logger.warning("[LLMMutationOperator] No parents provided for mutation")
             return None
@@ -131,7 +198,9 @@ class LLMMutationOperator(MutationOperator):
             )
 
             result = await self.agent.arun(
-                input=parents_for_mutation, mutation_mode=self.mutation_mode
+                input=parents_for_mutation,
+                mutation_mode=self.mutation_mode,
+                inspiration_context=inspiration_context,
             )
 
             # Capture model name (works for both standard and bandit routers)
@@ -167,6 +236,8 @@ class LLMMutationOperator(MutationOperator):
             prompt_id = result.get("prompt_id")
             if prompt_id is not None:
                 mutation_metadata[MutationSpec.META_PROMPT_ID] = prompt_id
+            if inspiration_metadata:
+                mutation_metadata.update(inspiration_metadata)
 
             mutation_spec = MutationSpec(
                 code=final_code,

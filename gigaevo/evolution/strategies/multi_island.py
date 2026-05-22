@@ -202,6 +202,50 @@ class MapElitesMultiIsland(EvolutionStrategy):
 
         return results
 
+    async def peek_elites(self, total: int = 10) -> list[Program]:
+        """Sample elites without generation, migration, or run-state side effects."""
+        logger.debug(
+            "MultiIsland: peeking elites (gen={}, total={}, islands={})",
+            self.generation,
+            total,
+            len(self.islands),
+        )
+
+        quotas = self._calculate_island_quotas(total)
+        logger.debug(
+            "MultiIsland: peek island quotas: {}",
+            {k: v for k, v in quotas.items() if v > 0},
+        )
+
+        tasks = [
+            asyncio.create_task(self.islands[island_id].select_elites(quota))
+            for island_id, quota in quotas.items()
+            if quota > 0
+        ]
+        if not tasks:
+            logger.debug("MultiIsland: no elites to peek (all islands empty)")
+            return []
+
+        selections = await asyncio.gather(*tasks)
+        results = [p for group in selections for p in group]
+
+        logger.debug(
+            "MultiIsland: peek collected {} elites from {} islands",
+            len(results),
+            len(tasks),
+        )
+
+        random.shuffle(results)
+        if len(results) > total:
+            logger.debug(
+                "MultiIsland: peek sampling {} from {} collected elites",
+                total,
+                len(results),
+            )
+            results = random.sample(results, total)
+
+        return results
+
     async def select_migrants(self, count: int) -> list[Program]:
         """Select migrants across all islands (utility)."""
         tasks = [
