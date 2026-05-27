@@ -9,6 +9,7 @@ from loguru import logger
 from omegaconf import DictConfig
 
 from gigaevo.config.resolvers import register_resolvers
+from gigaevo.database.invariant_audit import audit_status_archive_invariants
 from gigaevo.database.redis_program_storage import RedisProgramStorage
 from gigaevo.evolution.engine import EvolutionEngine
 from gigaevo.problems.initial_loaders import InitialProgramLoader
@@ -54,9 +55,9 @@ async def run_experiment(cfg: DictConfig) -> None:
             )
 
         if has_data and resume:
-            recovered = await redis_storage.recover_stranded_programs()
-            if recovered:
-                logger.info("Recovered {} stranded RUNNING program(s)", recovered)
+            logger.info(
+                "Resume requested; RUNNING programs will be reconciled by DagRunner leases"
+            )
             await evolution_engine.restore_state()
             await evolution_engine.strategy.restore_state()
             logger.info(
@@ -66,6 +67,20 @@ async def run_experiment(cfg: DictConfig) -> None:
         else:
             programs = await program_loader.load(redis_storage)
             logger.info("Loaded {} initial programs", len(programs))
+
+        audit_cfg = cfg.get("runtime_invariant_audit", {})
+        if audit_cfg.get("enabled", True):
+            audit = await audit_status_archive_invariants(
+                redis_storage, evolution_engine.strategy
+            )
+            if audit.ok:
+                logger.info("[InvariantAudit] {}", audit.summary())
+            else:
+                summary = audit.summary()
+                policy = str(audit_cfg.get("policy", "fail")).lower()
+                if policy == "fail":
+                    raise RuntimeError(f"Fresh-run invariant audit failed:\n{summary}")
+                logger.warning("[InvariantAudit] {}", summary)
 
         dag_runner.start()
         evolution_engine.start()

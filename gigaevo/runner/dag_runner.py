@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import gc
 import os
+import socket
 import time
-from typing import Any, NamedTuple
+from typing import Any
+import uuid
 
 from loguru import logger
 from pydantic import BaseModel, Field, computed_field, field_validator
@@ -23,10 +26,16 @@ from gigaevo.utils.metrics_collector import start_metrics_collector
 from gigaevo.utils.trackers.base import LogWriter
 
 
-class TaskInfo(NamedTuple):
+LEASE_METADATA_KEY = "evaluation_lease"
+
+
+@dataclass
+class TaskInfo:
     task: asyncio.Task
     program_id: str
     started_at: float
+    attempt_id: str
+    last_heartbeat_at: float
 
 
 class DagRunnerMetrics(BaseModel):
@@ -39,6 +48,9 @@ class DagRunnerMetrics(BaseModel):
     dag_errors: int = 0
     dag_timeouts: int = 0
     orphaned_programs_discarded: int = 0
+    orphaned_programs_requeued: int = 0
+    orphaned_programs_quarantined: int = 0
+    stale_attempt_completions_ignored: int = 0
     dag_build_failures: int = 0
     state_update_failures: int = 0
 
@@ -82,6 +94,16 @@ class DagRunnerMetrics(BaseModel):
         self.orphaned_programs_discarded += 1
         self.dag_errors += 1
 
+    def record_orphan_requeued(self) -> None:
+        self.orphaned_programs_requeued += 1
+
+    def record_orphan_quarantined(self) -> None:
+        self.orphaned_programs_quarantined += 1
+        self.dag_errors += 1
+
+    def record_stale_completion(self) -> None:
+        self.stale_attempt_completions_ignored += 1
+
     def record_build_failure(self) -> None:
         self.dag_build_failures += 1
         self.dag_errors += 1
@@ -121,6 +143,32 @@ class DagRunnerConfig(BaseModel):
     dag_timeout: float = Field(
         default=3600, gt=0, description="Timeout for DAG execution"
     )
+    heartbeat_interval: float = Field(
+        default=30.0,
+        gt=0,
+        description="Seconds between persisted DAG lease heartbeats",
+    )
+    heartbeat_stale_after: float = Field(
+        default=180.0,
+        gt=0,
+        description="Heartbeat age after which a lease is considered stale",
+    )
+    owner_lost_after: float = Field(
+        default=360.0,
+        gt=0,
+        description="Heartbeat age after which orphan recovery may reclaim a lease",
+    )
+    deadline_grace: float = Field(
+        default=120.0,
+        ge=0,
+        description="Grace period after DAG deadline before external recovery",
+    )
+    max_dag_attempts: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Maximum DAG attempts before infrastructure quarantine",
+    )
 
     @field_validator("poll_interval")
     @classmethod
@@ -157,6 +205,7 @@ class DagRunner:
         self._config = config
         self._writer = writer.bind(path=["dag_runner"])
         self._prioritizer = prioritizer or FIFOPrioritizer()
+        self._runner_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
         self._active: dict[str, TaskInfo] = {}
         self._sema = asyncio.Semaphore(self._config.max_concurrent_dags)
@@ -266,6 +315,8 @@ class DagRunner:
                 finished.append(info)
             elif (now - info.started_at) > self._config.dag_timeout:
                 timed_out.append(info)
+            elif (now - info.last_heartbeat_at) >= self._config.heartbeat_interval:
+                await self._heartbeat(info, now)
 
         for info in timed_out:
             await self._cancel_task(info)
@@ -275,23 +326,25 @@ class DagRunner:
                 if prog:
                     if prog.state == ProgramState.DONE:
                         # TOCTOU guard: the task completed successfully between the
-                        # "timed out" classification and this point. Don't discard
+                        # "timed out" classification and this point. Don't recover
                         # a program that already finished — it will be ingested normally.
                         logger.warning(
                             "[DagScheduler] program {} classified as timed out but "
-                            "already DONE — skipping discard",
+                            "already DONE — skipping recovery",
                             info.program_id[:8],
                         )
                         self._metrics.record_timeout()
                         continue
-                    await self._state_manager.set_program_state(
-                        prog, ProgramState.DISCARDED
+                    await self._recover_failed_attempt(
+                        prog,
+                        reason="dag_timeout",
+                        expected_attempt_id=info.attempt_id,
                     )
                 self._metrics.record_timeout()
                 logger.error("[DagScheduler] program {} timed out", info.program_id[:8])
             except Exception as e:
                 logger.error(
-                    "[DagScheduler] discard after timeout failed for {}: {}",
+                    "[DagScheduler] recovery after timeout failed for {}: {}",
                     info.program_id[:8],
                     e,
                 )
@@ -343,27 +396,13 @@ class DagRunner:
             logger.error("[DagScheduler] fetch-by-status failed: {}", e)
             return
 
-        # Phase 2: handle orphaned RUNNING programs (fetch full data only for these)
+        # Phase 2: recover orphaned RUNNING programs (fetch full data only for these)
         orphaned_ids = [pid for pid in running_ids if pid not in self._active]
         if orphaned_ids:
             try:
                 orphaned = await self._storage.mget(orphaned_ids)
                 for p in [p for p in orphaned if p is not None]:
-                    try:
-                        await self._state_manager.set_program_state(
-                            p, ProgramState.DISCARDED
-                        )
-                        self._metrics.record_orphaned()
-                        logger.warning(
-                            "[DagScheduler] orphaned program {} discarded", p.short_id
-                        )
-                    except Exception as se:
-                        self._metrics.record_state_update_failure()
-                        logger.error(
-                            "[DagScheduler] orphan discard failed for {}: {}",
-                            p.short_id,
-                            se,
-                        )
+                    await self._recover_orphaned_program(p)
             except Exception as e:
                 logger.error("[DagScheduler] orphan fetch failed: {}", e)
 
@@ -412,7 +451,7 @@ class DagRunner:
                 self._metrics.record_build_failure()
                 try:
                     await self._state_manager.set_program_state(
-                        program, ProgramState.DISCARDED
+                        program, ProgramState.QUARANTINED
                     )
                 except Exception as se:
                     logger.error(
@@ -427,8 +466,20 @@ class DagRunner:
                 async with self._sema:
                     await self._execute_dag(dag_inst, prog)
 
+            lease = self._new_lease(program)
+            program.set_metadata(LEASE_METADATA_KEY, lease)
+            await self._storage.update_program_metadata(
+                program.id, {LEASE_METADATA_KEY: lease}
+            )
             task = asyncio.create_task(_run_one(), name=f"dag-{program.short_id}")
-            self._active[program.id] = TaskInfo(task, program.id, time.monotonic())
+            start_mono = time.monotonic()
+            self._active[program.id] = TaskInfo(
+                task=task,
+                program_id=program.id,
+                started_at=start_mono,
+                attempt_id=lease["attempt_id"],
+                last_heartbeat_at=start_mono,
+            )
             launched.append(program)
 
         # Batch transition QUEUED → RUNNING (3 RT instead of 2N RT)
@@ -477,6 +528,14 @@ class DagRunner:
             predictor.update(program, eval_duration)
 
         if ok:
+            if not await self._attempt_still_current(program):
+                self._metrics.record_stale_completion()
+                logger.warning(
+                    "[DagScheduler] Ignoring stale completion for {} attempt={}",
+                    program.short_id,
+                    self._lease(program).get("attempt_id"),
+                )
+                return
             # Queue for batch RUNNING→DONE transition
             # (bulk SREM/SADD — 2 commands instead of 2N).
             self._done_queue.append(program)
@@ -488,17 +547,11 @@ class DagRunner:
                 program.short_id,
             )
         else:
-            try:
-                await self._state_manager.set_program_state(
-                    program, ProgramState.DISCARDED
-                )
-            except Exception as se:
-                self._metrics.record_state_update_failure()
-                logger.error(
-                    "[DagScheduler] state update failed for {}: {}",
-                    program.short_id,
-                    se,
-                )
+            await self._recover_failed_attempt(
+                program,
+                reason="dag_run_failed",
+                expected_attempt_id=self._lease(program).get("attempt_id"),
+            )
 
     async def _flush_done_queue(self) -> None:
         """Batch-transition queued DONE programs to Redis."""
@@ -507,8 +560,20 @@ class DagRunner:
         batch = self._done_queue[:]
         self._done_queue.clear()
         try:
+            current_batch: list[Program] = []
+            for program in batch:
+                if await self._attempt_still_current(program):
+                    current_batch.append(program)
+                else:
+                    self._metrics.record_stale_completion()
+                    logger.warning(
+                        "[DagScheduler] Dropping stale DONE transition for {}",
+                        program.short_id,
+                    )
+            if not current_batch:
+                return
             await self._storage.batch_transition_state(
-                batch,
+                current_batch,
                 ProgramState.RUNNING.value,
                 ProgramState.DONE.value,
             )
@@ -520,6 +585,202 @@ class DagRunner:
                 "[DagScheduler] batch RUNNING→DONE failed for {} programs: {}",
                 len(batch),
                 e,
+            )
+
+    def _new_lease(self, program: Program) -> dict[str, Any]:
+        existing = self._lease(program)
+        attempt_count = int(existing.get("attempt_count", 0) or 0) + 1
+        now = datetime.now(UTC)
+        deadline = now + timedelta(seconds=self._config.dag_timeout)
+        return {
+            "runner_id": self._runner_id,
+            "attempt_id": str(uuid.uuid4()),
+            "attempt_count": attempt_count,
+            "started_at": now.isoformat(),
+            "heartbeat_at": now.isoformat(),
+            "deadline_at": deadline.isoformat(),
+            "dag_timeout_seconds": self._config.dag_timeout,
+        }
+
+    @staticmethod
+    def _lease(program: Program) -> dict[str, Any]:
+        lease = program.get_metadata(LEASE_METADATA_KEY)
+        return lease if isinstance(lease, dict) else {}
+
+    @staticmethod
+    def _parse_ts(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    async def _heartbeat(self, info: TaskInfo, now_mono: float) -> None:
+        now = datetime.now(UTC)
+        try:
+            current = await self._storage.get(info.program_id)
+            lease = self._lease(current) if current is not None else {}
+            await self._storage.update_program_metadata(
+                info.program_id,
+                {
+                    LEASE_METADATA_KEY: {
+                        **lease,
+                        "runner_id": self._runner_id,
+                        "attempt_id": info.attempt_id,
+                        "heartbeat_at": now.isoformat(),
+                    }
+                },
+            )
+            info.last_heartbeat_at = now_mono
+        except Exception as exc:
+            logger.warning(
+                "[DagScheduler] heartbeat failed for {}: {}",
+                info.program_id[:8],
+                exc,
+            )
+
+    async def _attempt_still_current(self, program: Program) -> bool:
+        lease = self._lease(program)
+        attempt_id = lease.get("attempt_id")
+        if not attempt_id:
+            return True
+        current = await self._storage.get(program.id)
+        if current is None:
+            return False
+        return self._lease(current).get("attempt_id") == attempt_id
+
+    def _terminal_evidence_exists(self, program: Program) -> bool:
+        if program.metrics:
+            return True
+        result = program.stage_results.get("EnsureMetricsStage")
+        return bool(result and result.status.name == "COMPLETED")
+
+    def _lease_should_recover(self, program: Program) -> bool:
+        lease = self._lease(program)
+        heartbeat_at = self._parse_ts(lease.get("heartbeat_at"))
+        deadline_at = self._parse_ts(lease.get("deadline_at"))
+        if heartbeat_at is None:
+            return True
+        now = datetime.now(UTC)
+        heartbeat_age = (now - heartbeat_at).total_seconds()
+        if deadline_at is not None:
+            deadline_expired = now > (
+                deadline_at + timedelta(seconds=self._config.deadline_grace)
+            )
+        else:
+            deadline_expired = False
+        return heartbeat_age >= self._config.owner_lost_after or (
+            deadline_expired and heartbeat_age >= self._config.heartbeat_stale_after
+        )
+
+    async def _recover_orphaned_program(self, program: Program) -> None:
+        if program.state != ProgramState.RUNNING:
+            logger.warning(
+                "[DagScheduler] RUNNING status-set member {} has JSON state={}; "
+                "leaving unchanged for invariant audit",
+                program.short_id,
+                program.state,
+            )
+            return
+
+        if not self._lease_should_recover(program):
+            logger.debug(
+                "[DagScheduler] orphaned program {} has a fresh lease; leaving alone",
+                program.short_id,
+            )
+            return
+
+        if self._terminal_evidence_exists(program):
+            await self._state_manager.set_program_state(program, ProgramState.DONE)
+            logger.warning(
+                "[DagScheduler] orphaned program {} finalized as DONE from terminal evidence",
+                program.short_id,
+            )
+            return
+
+        await self._recover_failed_attempt(program, reason="stale_orphan")
+
+    async def _recover_failed_attempt(
+        self,
+        program: Program,
+        *,
+        reason: str,
+        expected_attempt_id: Any | None = None,
+    ) -> None:
+        current = await self._storage.get(program.id)
+        if current is not None:
+            program = current
+        if program.state in (
+            ProgramState.DONE,
+            ProgramState.DISCARDED,
+            ProgramState.QUARANTINED,
+        ):
+            logger.debug(
+                "[DagScheduler] Not recovering {} from {}: already {}",
+                program.short_id,
+                reason,
+                program.state,
+            )
+            return
+        lease = self._lease(program)
+        if expected_attempt_id and lease.get("attempt_id") != expected_attempt_id:
+            logger.warning(
+                "[DagScheduler] Not recovering {}: attempt changed (expected={}, current={})",
+                program.short_id,
+                expected_attempt_id,
+                lease.get("attempt_id"),
+            )
+            return
+
+        attempt_count = int(lease.get("attempt_count", 0) or 0)
+        recovery = {
+            **lease,
+            "last_recovery_reason": reason,
+            "last_recovered_at": datetime.now(UTC).isoformat(),
+        }
+        program.set_metadata(LEASE_METADATA_KEY, recovery)
+
+        if attempt_count < self._config.max_dag_attempts:
+            try:
+                await self._state_manager.set_program_state(program, ProgramState.QUEUED)
+            except Exception as exc:
+                self._metrics.record_state_update_failure()
+                logger.error(
+                    "[DagScheduler] failed to requeue {} after {}: {}",
+                    program.short_id,
+                    reason,
+                    exc,
+                )
+                return
+            self._metrics.record_orphan_requeued()
+            logger.warning(
+                "[DagScheduler] program {} {} -> QUEUED for retry ({}/{})",
+                program.short_id,
+                reason,
+                attempt_count,
+                self._config.max_dag_attempts,
+            )
+        else:
+            try:
+                await self._state_manager.set_program_state(
+                    program, ProgramState.QUARANTINED
+                )
+            except Exception as exc:
+                self._metrics.record_state_update_failure()
+                logger.error(
+                    "[DagScheduler] failed to quarantine {} after {}: {}",
+                    program.short_id,
+                    reason,
+                    exc,
+                )
+                return
+            self._metrics.record_orphan_quarantined()
+            logger.error(
+                "[DagScheduler] program {} {} -> QUARANTINED after {} attempt(s)",
+                program.short_id,
+                reason,
+                attempt_count,
             )
 
     async def _cancel_task(self, info: TaskInfo) -> None:

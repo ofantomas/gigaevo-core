@@ -16,3 +16,9 @@ checkpoint_dir: null
 
 # Optional override for api.namespace in memory config.
 namespace: null
+
+# Read-only lifecycle/status/archive consistency check at startup/resume.
+# Use policy=warn only for intentionally inspecting legacy Redis DBs.
+runtime_invariant_audit:
+  enabled: true
+  policy: fail

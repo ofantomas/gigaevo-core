@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 from datetime import UTC
+from datetime import datetime
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -171,10 +172,17 @@ class TestDagRunnerLifecycle:
 class TestTaskInfo:
     def test_named_tuple_fields(self):
         mock_task = MagicMock()
-        info = TaskInfo(task=mock_task, program_id="abc-123", started_at=1000.0)
+        info = TaskInfo(
+            task=mock_task,
+            program_id="abc-123",
+            started_at=1000.0,
+            attempt_id="attempt-1",
+            last_heartbeat_at=1000.0,
+        )
         assert info.task is mock_task
         assert info.program_id == "abc-123"
         assert info.started_at == 1000.0
+        assert info.attempt_id == "attempt-1"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +202,7 @@ def _make_mock_storage():
     storage.mget = AsyncMock(return_value=[])
     storage.add = AsyncMock()
     storage.update = AsyncMock()
+    storage.update_program_metadata = AsyncMock()
     storage.write_exclusive = AsyncMock()
     storage.exists = AsyncMock(return_value=True)
     storage.get_ids_by_status = AsyncMock(return_value=[])
@@ -313,7 +322,11 @@ class TestDagRunnerLaunch:
         # Pre-populate _active with this program
         dummy_task = asyncio.create_task(asyncio.sleep(100))
         runner._active[prog.id] = TaskInfo(
-            task=dummy_task, program_id=prog.id, started_at=time.monotonic()
+            task=dummy_task,
+            program_id=prog.id,
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
         )
 
         await runner._launch()
@@ -327,8 +340,8 @@ class TestDagRunnerLaunch:
         except asyncio.CancelledError:
             pass
 
-    async def test_orphaned_running_discarded(self):
-        """RUNNING program not in _active gets DISCARDED."""
+    async def test_stale_orphaned_running_requeued(self):
+        """Stale RUNNING program not in _active is retried, not discarded."""
         prog = _make_test_program(state=ProgramState.RUNNING)
         storage = _make_mock_storage()
         storage.get_ids_by_status = AsyncMock(
@@ -339,12 +352,67 @@ class TestDagRunnerLaunch:
         runner = _make_runner(storage=storage)
         await runner._launch()
 
-        assert runner._metrics.orphaned_programs_discarded == 1
-        assert runner._metrics.dag_errors == 1
-        # fast_state_transition should have been called to discard with DISCARDED state
+        assert runner._metrics.orphaned_programs_requeued == 1
+        assert runner._metrics.orphaned_programs_discarded == 0
         storage.fast_state_transition.assert_called()
         call_args = storage.fast_state_transition.call_args
-        assert call_args[0][2] == ProgramState.DISCARDED.value
+        assert call_args[0][2] == ProgramState.QUEUED.value
+
+    async def test_fresh_orphaned_running_lease_is_left_alone(self):
+        """Fresh external lease means another runner may still own the DAG."""
+        prog = _make_test_program(state=ProgramState.RUNNING)
+        prog.set_metadata(
+            "evaluation_lease",
+            {
+                "runner_id": "other-runner",
+                "attempt_id": "attempt-1",
+                "attempt_count": 1,
+                "started_at": datetime.now(UTC).isoformat(),
+                "heartbeat_at": datetime.now(UTC).isoformat(),
+                "deadline_at": datetime.now(UTC).isoformat(),
+                "dag_timeout_seconds": 3600,
+            },
+        )
+        storage = _make_mock_storage()
+        storage.get_ids_by_status = AsyncMock(
+            side_effect=lambda s: [prog.id] if s == ProgramState.RUNNING.value else []
+        )
+        storage.mget = AsyncMock(return_value=[prog])
+
+        runner = _make_runner(storage=storage)
+        await runner._launch()
+
+        storage.fast_state_transition.assert_not_called()
+        assert runner._metrics.orphaned_programs_requeued == 0
+
+    async def test_stale_orphaned_running_exhausted_attempts_quarantined(self):
+        """Stale orphan with no retry budget moves to QUARANTINED."""
+        prog = _make_test_program(state=ProgramState.RUNNING)
+        prog.set_metadata(
+            "evaluation_lease",
+            {
+                "runner_id": "old-runner",
+                "attempt_id": "attempt-2",
+                "attempt_count": 2,
+                "started_at": "2000-01-01T00:00:00+00:00",
+                "heartbeat_at": "2000-01-01T00:00:00+00:00",
+                "deadline_at": "2000-01-01T00:00:00+00:00",
+                "dag_timeout_seconds": 3600,
+            },
+        )
+        storage = _make_mock_storage()
+        storage.get_ids_by_status = AsyncMock(
+            side_effect=lambda s: [prog.id] if s == ProgramState.RUNNING.value else []
+        )
+        storage.mget = AsyncMock(return_value=[prog])
+
+        runner = _make_runner(storage=storage)
+        await runner._launch()
+
+        assert runner._metrics.orphaned_programs_quarantined == 1
+        storage.fast_state_transition.assert_called()
+        call_args = storage.fast_state_transition.call_args
+        assert call_args[0][2] == ProgramState.QUARANTINED.value
 
     async def test_mark_running_failure_cancels_task_and_removes_from_active(self):
         """If batch_transition_by_ids raises after task creation, tasks are cancelled."""
@@ -400,8 +468,8 @@ class TestDagRunnerLaunch:
             except (asyncio.CancelledError, Exception):
                 pass
 
-    async def test_build_failure_discards_program(self):
-        """DAGBlueprint.build() raises -> program DISCARDED, metrics incremented."""
+    async def test_build_failure_quarantines_program(self):
+        """DAGBlueprint.build() raises -> program QUARANTINED, metrics incremented."""
         prog = _make_test_program(state=ProgramState.QUEUED)
         storage = _make_mock_storage()
         storage.get_ids_by_status = AsyncMock(
@@ -418,6 +486,9 @@ class TestDagRunnerLaunch:
         assert runner._metrics.dag_build_failures == 1
         assert runner._metrics.dag_errors == 1
         assert prog.id not in runner._active
+        storage.fast_state_transition.assert_called()
+        call_args = storage.fast_state_transition.call_args
+        assert call_args[0][2] == ProgramState.QUARANTINED.value
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +509,11 @@ class TestDagRunnerMaintain:
         await task  # ensure it's done
 
         runner._active["prog-1"] = TaskInfo(
-            task=task, program_id="prog-1", started_at=time.monotonic()
+            task=task,
+            program_id="prog-1",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
         )
 
         await runner._maintain()
@@ -450,6 +525,10 @@ class TestDagRunnerMaintain:
         """Pending task with started_at in the past gets cancelled, dag_timeouts incremented."""
         storage = _make_mock_storage()
         prog = _make_test_program(state=ProgramState.RUNNING)
+        prog.set_metadata(
+            "evaluation_lease",
+            {"attempt_id": "attempt-1", "attempt_count": 1},
+        )
         storage.get = AsyncMock(return_value=prog)
 
         config = DagRunnerConfig(dag_timeout=1.0)
@@ -460,7 +539,11 @@ class TestDagRunnerMaintain:
 
         # Set started_at far in the past so it's timed out
         runner._active["prog-1"] = TaskInfo(
-            task=task, program_id="prog-1", started_at=time.monotonic() - 100
+            task=task,
+            program_id="prog-1",
+            started_at=time.monotonic() - 100,
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic() - 100,
         )
 
         await runner._maintain()
@@ -468,10 +551,10 @@ class TestDagRunnerMaintain:
         assert "prog-1" not in runner._active
         assert runner._metrics.dag_timeouts == 1
         assert runner._metrics.dag_errors == 1
-        # Verify DISCARDED state was set on the program
+        # Verify the failed attempt was requeued for retry, not discarded.
         storage.fast_state_transition.assert_called()
         call_args = storage.fast_state_transition.call_args
-        assert call_args[0][2] == ProgramState.DISCARDED.value
+        assert call_args[0][2] == ProgramState.QUEUED.value
 
     async def test_unharvested_done_tasks_block_capacity(self):
         """Done tasks in _active block capacity until _maintain harvests them."""
@@ -490,10 +573,18 @@ class TestDagRunnerMaintain:
         runner = _make_runner(storage=storage, config=config)
 
         runner._active["p1"] = TaskInfo(
-            task=task1, program_id="p1", started_at=time.monotonic()
+            task=task1,
+            program_id="p1",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
         )
         runner._active["p2"] = TaskInfo(
-            task=task2, program_id="p2", started_at=time.monotonic()
+            task=task2,
+            program_id="p2",
+            started_at=time.monotonic(),
+            attempt_id="attempt-2",
+            last_heartbeat_at=time.monotonic(),
         )
 
         # Capacity check: len(_active) == 2, max == 2 -> capacity == 0
@@ -550,7 +641,11 @@ class TestDagRunnerMaintain:
             pass
 
         runner._active["prog-1"] = TaskInfo(
-            task=task, program_id="prog-1", started_at=time.monotonic()
+            task=task,
+            program_id="prog-1",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
         )
 
         await runner._maintain()
@@ -581,8 +676,30 @@ class TestDagRunnerExecuteDag:
         # fast_state_transition should NOT be called (batched instead)
         storage.fast_state_transition.assert_not_called()
 
-    async def test_failure_sets_discarded(self):
-        """Mock DAG.run() to raise, verify state becomes DISCARDED."""
+    async def test_stale_attempt_success_does_not_queue_done(self):
+        """Completion from an older attempt cannot overwrite a newer retry lease."""
+        prog = _make_test_program(state=ProgramState.RUNNING)
+        prog.set_metadata(
+            "evaluation_lease",
+            {"attempt_id": "old-attempt", "attempt_count": 1},
+        )
+        current = prog.model_copy(deep=True)
+        current.set_metadata(
+            "evaluation_lease",
+            {"attempt_id": "new-attempt", "attempt_count": 2},
+        )
+        storage = _make_mock_storage()
+        storage.get = AsyncMock(return_value=current)
+        runner = _make_runner(storage=storage)
+
+        mock_dag = _make_mock_dag()
+        await runner._execute_dag(mock_dag, prog)
+
+        assert runner._done_queue == []
+        assert runner._metrics.stale_attempt_completions_ignored == 1
+
+    async def test_failure_requeues_for_retry(self):
+        """Mock DAG.run() to raise, verify state becomes QUEUED for retry."""
         prog = _make_test_program(state=ProgramState.RUNNING)
         storage = _make_mock_storage()
         runner = _make_runner(storage=storage)
@@ -594,7 +711,7 @@ class TestDagRunnerExecuteDag:
         mock_dag.run.assert_awaited_once_with(prog)
         storage.fast_state_transition.assert_called()
         call_args = storage.fast_state_transition.call_args
-        assert call_args[0][2] == ProgramState.DISCARDED.value
+        assert call_args[0][2] == ProgramState.QUEUED.value
 
     async def test_execute_dag_cleanup_after_crash(self):
         """When dag.run() raises, the finally block still cleans up DAG internals."""
@@ -732,7 +849,11 @@ class TestGCTiming:
         await task
 
         runner._active["prog-gc"] = TaskInfo(
-            task=task, program_id="prog-gc", started_at=time.monotonic()
+            task=task,
+            program_id="prog-gc",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
         )
 
         old_gc_time = runner._last_gc_time
@@ -758,7 +879,11 @@ class TestGCTiming:
         await task
 
         runner._active["prog-nogc"] = TaskInfo(
-            task=task, program_id="prog-nogc", started_at=time.monotonic()
+            task=task,
+            program_id="prog-nogc",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
         )
 
         gc_time_before = runner._last_gc_time
@@ -791,7 +916,13 @@ class TestCancelTask:
         await task
         assert task.done()
 
-        info = TaskInfo(task=task, program_id="done-prog", started_at=time.monotonic())
+        info = TaskInfo(
+            task=task,
+            program_id="done-prog",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
+        )
 
         # Should not raise, should return immediately
         await runner._cancel_task(info)
@@ -815,7 +946,13 @@ class TestCancelTask:
         # Let the task start
         await asyncio.sleep(0)
 
-        info = TaskInfo(task=task, program_id="stuck-prog", started_at=time.monotonic())
+        info = TaskInfo(
+            task=task,
+            program_id="stuck-prog",
+            started_at=time.monotonic(),
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic(),
+        )
 
         # _cancel_task has a 2s timeout; the stubborn task sleeps 10s after cancel
         # This should log a warning about the task not terminating
@@ -848,7 +985,11 @@ class TestMaintainEdgeCases:
         # Create a running task that has timed out
         task = asyncio.create_task(asyncio.sleep(3600))
         runner._active["prog-fail"] = TaskInfo(
-            task=task, program_id="prog-fail", started_at=time.monotonic() - 100
+            task=task,
+            program_id="prog-fail",
+            started_at=time.monotonic() - 100,
+            attempt_id="attempt-1",
+            last_heartbeat_at=time.monotonic() - 100,
         )
 
         # Should not raise despite storage failure

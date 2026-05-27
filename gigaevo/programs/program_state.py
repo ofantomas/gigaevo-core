@@ -6,6 +6,7 @@ class ProgramState(StrEnum):
     RUNNING = "running"
     DONE = "done"
     DISCARDED = "discarded"
+    QUARANTINED = "quarantined"
 
 
 INCOMPLETE_STATES = {
@@ -19,6 +20,7 @@ COMPLETE_STATES = {
 
 TERMINAL_STATES = {
     ProgramState.DISCARDED,
+    ProgramState.QUARANTINED,
 }
 
 STATES_WITH_METRICS = {
@@ -29,16 +31,20 @@ VALID_TRANSITIONS: dict[ProgramState, set[ProgramState]] = {
     ProgramState.QUEUED: {
         ProgramState.RUNNING,
         ProgramState.DISCARDED,
+        ProgramState.QUARANTINED,
     },
     ProgramState.RUNNING: {
+        ProgramState.QUEUED,
         ProgramState.DONE,
         ProgramState.DISCARDED,
+        ProgramState.QUARANTINED,
     },
     ProgramState.DONE: {
-        ProgramState.QUEUED,
         ProgramState.DISCARDED,
+        ProgramState.QUARANTINED,
     },
     ProgramState.DISCARDED: set(),
+    ProgramState.QUARANTINED: set(),
 }
 
 

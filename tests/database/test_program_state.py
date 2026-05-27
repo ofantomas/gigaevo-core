@@ -25,14 +25,15 @@ class TestProgramStateEnum:
         assert ProgramState.RUNNING == "running"
         assert ProgramState.DONE == "done"
         assert ProgramState.DISCARDED == "discarded"
+        assert ProgramState.QUARANTINED == "quarantined"
 
     def test_is_str_enum(self):
         for state in ProgramState:
             assert isinstance(state, str)
             assert isinstance(state.value, str)
 
-    def test_exactly_four_states(self):
-        assert len(ProgramState) == 4
+    def test_exactly_five_states(self):
+        assert len(ProgramState) == 5
 
 
 class TestStateCategories:
@@ -43,7 +44,7 @@ class TestStateCategories:
         assert COMPLETE_STATES == {ProgramState.DONE}
 
     def test_terminal_states(self):
-        assert TERMINAL_STATES == {ProgramState.DISCARDED}
+        assert TERMINAL_STATES == {ProgramState.DISCARDED, ProgramState.QUARANTINED}
 
     def test_disjoint(self):
         all_sets = [INCOMPLETE_STATES, COMPLETE_STATES, TERMINAL_STATES]
@@ -66,10 +67,13 @@ class TestValidTransitions:
         [
             (ProgramState.QUEUED, ProgramState.RUNNING),
             (ProgramState.QUEUED, ProgramState.DISCARDED),
+            (ProgramState.QUEUED, ProgramState.QUARANTINED),
+            (ProgramState.RUNNING, ProgramState.QUEUED),
             (ProgramState.RUNNING, ProgramState.DONE),
             (ProgramState.RUNNING, ProgramState.DISCARDED),
-            (ProgramState.DONE, ProgramState.QUEUED),
+            (ProgramState.RUNNING, ProgramState.QUARANTINED),
             (ProgramState.DONE, ProgramState.DISCARDED),
+            (ProgramState.DONE, ProgramState.QUARANTINED),
         ],
     )
     def test_valid_transitions(self, src, dst):
@@ -79,11 +83,14 @@ class TestValidTransitions:
         "src,dst",
         [
             (ProgramState.QUEUED, ProgramState.DONE),
-            (ProgramState.RUNNING, ProgramState.QUEUED),
+            (ProgramState.DONE, ProgramState.QUEUED),
             (ProgramState.DONE, ProgramState.RUNNING),
             (ProgramState.DISCARDED, ProgramState.QUEUED),
             (ProgramState.DISCARDED, ProgramState.RUNNING),
             (ProgramState.DISCARDED, ProgramState.DONE),
+            (ProgramState.QUARANTINED, ProgramState.QUEUED),
+            (ProgramState.QUARANTINED, ProgramState.RUNNING),
+            (ProgramState.QUARANTINED, ProgramState.DONE),
         ],
     )
     def test_invalid_transitions(self, src, dst):
@@ -95,6 +102,7 @@ class TestValidTransitions:
 
     def test_discarded_has_no_outgoing(self):
         assert VALID_TRANSITIONS[ProgramState.DISCARDED] == set()
+        assert VALID_TRANSITIONS[ProgramState.QUARANTINED] == set()
 
 
 class TestValidateTransition:
@@ -118,6 +126,7 @@ class TestPredicates:
             (ProgramState.RUNNING, True),
             (ProgramState.DONE, False),
             (ProgramState.DISCARDED, False),
+            (ProgramState.QUARANTINED, False),
         ],
     )
     def test_is_incomplete(self, state, expected):
@@ -130,6 +139,7 @@ class TestPredicates:
             (ProgramState.RUNNING, False),
             (ProgramState.DONE, True),
             (ProgramState.DISCARDED, False),
+            (ProgramState.QUARANTINED, False),
         ],
     )
     def test_is_complete(self, state, expected):
@@ -142,6 +152,7 @@ class TestPredicates:
             (ProgramState.RUNNING, False),
             (ProgramState.DONE, False),
             (ProgramState.DISCARDED, True),
+            (ProgramState.QUARANTINED, True),
         ],
     )
     def test_is_terminal(self, state, expected):
@@ -154,6 +165,7 @@ class TestPredicates:
             (ProgramState.RUNNING, False),
             (ProgramState.DONE, True),
             (ProgramState.DISCARDED, False),
+            (ProgramState.QUARANTINED, False),
         ],
     )
     def test_has_metrics(self, state, expected):
@@ -168,10 +180,18 @@ class TestMergeStates:
     def test_terminal_wins_as_incoming(self):
         for state in [ProgramState.QUEUED, ProgramState.RUNNING, ProgramState.DONE]:
             assert merge_states(state, ProgramState.DISCARDED) == ProgramState.DISCARDED
+            assert (
+                merge_states(state, ProgramState.QUARANTINED)
+                == ProgramState.QUARANTINED
+            )
 
     def test_terminal_wins_as_current(self):
         for state in [ProgramState.QUEUED, ProgramState.RUNNING, ProgramState.DONE]:
             assert merge_states(ProgramState.DISCARDED, state) == ProgramState.DISCARDED
+            assert (
+                merge_states(ProgramState.QUARANTINED, state)
+                == ProgramState.QUARANTINED
+            )
 
     def test_forward_transition(self):
         # QUEUED -> RUNNING is a valid transition, so incoming wins
@@ -181,32 +201,27 @@ class TestMergeStates:
         )
 
     def test_backward_transition(self):
-        # RUNNING -> QUEUED is invalid, but QUEUED -> RUNNING is valid, so current wins
+        # RUNNING -> QUEUED is the lease-retry transition, so incoming wins.
         assert (
             merge_states(ProgramState.RUNNING, ProgramState.QUEUED)
-            == ProgramState.RUNNING
+            == ProgramState.QUEUED
         )
 
-    def test_done_to_running_incompatible_raises(self):
-        # DONE->RUNNING is not valid, and RUNNING->DONE is forward only.
-        # But merge_states checks both directions. Actually RUNNING->DONE is valid.
-        # The only truly incompatible pair (non-terminal) would be hard to find
-        # since merge_states tries both directions.
-        # Let's verify that QUEUED and DONE actually merge (DONE->QUEUED is valid):
-        result = merge_states(ProgramState.QUEUED, ProgramState.DONE)
-        # DONE->QUEUED is a valid transition, so incoming DONE wins? No:
-        # QUEUED->DONE is NOT valid. DONE->QUEUED IS valid.
-        # is_valid_transition(QUEUED, DONE) = False
-        # is_valid_transition(DONE, QUEUED) = True -> return current (QUEUED)
-        assert result == ProgramState.QUEUED
+    def test_done_to_running_merge_keeps_done(self):
+        assert merge_states(ProgramState.DONE, ProgramState.RUNNING) == ProgramState.DONE
 
-    def test_all_pairs_non_terminal_merge_no_crash(self):
-        """For all (s1, s2) where neither is DISCARDED, merge_states should not crash."""
-        non_terminal = [s for s in ProgramState if s != ProgramState.DISCARDED]
-        for s1 in non_terminal:
-            for s2 in non_terminal:
-                result = merge_states(s1, s2)
-                assert isinstance(result, ProgramState)
+    def test_done_to_queued_incompatible_raises(self):
+        with pytest.raises(ValueError, match="Cannot merge incompatible states"):
+            merge_states(ProgramState.DONE, ProgramState.QUEUED)
+
+    def test_valid_non_terminal_pairs_merge_no_crash(self):
+        for s1, s2 in [
+            (ProgramState.QUEUED, ProgramState.RUNNING),
+            (ProgramState.RUNNING, ProgramState.QUEUED),
+            (ProgramState.RUNNING, ProgramState.DONE),
+        ]:
+            result = merge_states(s1, s2)
+            assert isinstance(result, ProgramState)
 
     def test_merge_is_commutative_for_same_state(self):
         """merge_states(s, s) == s for all states."""

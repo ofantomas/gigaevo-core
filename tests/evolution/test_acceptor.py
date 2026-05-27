@@ -55,6 +55,9 @@ class TestStateAcceptor:
     def test_rejects_discarded(self):
         assert not StateAcceptor().is_accepted(_make_program(ProgramState.DISCARDED))
 
+    def test_rejects_quarantined(self):
+        assert not StateAcceptor().is_accepted(_make_program(ProgramState.QUARANTINED))
+
     def test_rejects_queued(self):
         assert not StateAcceptor().is_accepted(_make_program(ProgramState.QUEUED))
 

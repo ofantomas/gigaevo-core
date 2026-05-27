@@ -452,6 +452,11 @@ class TestIsCompleteProperty:
         prog = Program(code="def f(): pass", state=ProgramState.DISCARDED)
         assert prog.is_complete is True
 
+    def test_quarantined_is_complete(self) -> None:
+        """QUARANTINED is terminal infrastructure ambiguity."""
+        prog = Program(code="def f(): pass", state=ProgramState.QUARANTINED)
+        assert prog.is_complete is True
+
 
 # ---------------------------------------------------------------------------
 # Audit Finding 1: Full round-trip serialization (all fields)

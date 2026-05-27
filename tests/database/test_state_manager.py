@@ -52,7 +52,7 @@ class TestMarkStageRunning:
         """RUNNING state is in-memory only — not written to Redis.
 
         DAG reads stage state from in-memory program.stage_results;
-        orphaned RUNNING programs are discarded on restart,
+        orphaned RUNNING programs are reconciled by DagRunner lease recovery,
         so persisting RUNNING provides no crash-recovery benefit and costs
         4 Redis round-trips per stage launch.
         """
@@ -148,15 +148,15 @@ class TestSetProgramState:
         with pytest.raises(ValueError, match="Invalid state transition"):
             await state_manager.set_program_state(prog, ProgramState.DONE)
 
-    async def test_done_to_queued_valid(
+    async def test_done_to_queued_invalid(
         self, state_manager, make_program, fakeredis_storage
     ):
-        """DONE -> QUEUED is valid (the refresh path)."""
+        """DONE -> QUEUED is no longer valid; archive refresh is lifecycle-neutral."""
         prog = make_program(state=ProgramState.DONE)
         await fakeredis_storage.add(prog)
 
-        await state_manager.set_program_state(prog, ProgramState.QUEUED)
-        assert prog.state == ProgramState.QUEUED
+        with pytest.raises(ValueError, match="Invalid state transition"):
+            await state_manager.set_program_state(prog, ProgramState.QUEUED)
 
     async def test_same_state_noop(
         self, state_manager, make_program, fakeredis_storage
@@ -167,6 +167,35 @@ class TestSetProgramState:
 
         await state_manager.set_program_state(prog, ProgramState.QUEUED)
         assert prog.state == ProgramState.QUEUED
+
+    async def test_same_state_does_not_repair_stale_status_index(
+        self, state_manager, make_program, fakeredis_storage
+    ):
+        """Same-state calls are no-op; repair belongs to explicit audit tooling."""
+        prog = make_program(state=ProgramState.DISCARDED)
+        await fakeredis_storage.add(prog)
+
+        redis_conn = fakeredis_storage._conn._redis
+        discarded_key = fakeredis_storage._keys.status_set(
+            ProgramState.DISCARDED.value
+        )
+        running_key = fakeredis_storage._keys.status_set(ProgramState.RUNNING.value)
+
+        # Simulate the DB3 failure shape: JSON says DISCARDED, but the status
+        # index still advertises RUNNING. Also remove the correct set to prove
+        # the repair re-adds the target membership.
+        await redis_conn.sadd(running_key, prog.id)
+        await redis_conn.srem(discarded_key, prog.id)
+
+        await state_manager.set_program_state(prog, ProgramState.DISCARDED)
+
+        assert prog.state == ProgramState.DISCARDED
+        assert prog.id in await fakeredis_storage.get_ids_by_status(
+            ProgramState.RUNNING.value
+        )
+        assert prog.id not in await fakeredis_storage.get_ids_by_status(
+            ProgramState.DISCARDED.value
+        )
 
     async def test_full_lifecycle(self, state_manager, make_program, fakeredis_storage):
         """QUEUED -> RUNNING -> DONE."""
@@ -192,6 +221,20 @@ class TestSetProgramState:
             await fakeredis_storage.add(prog)
             await state_manager.set_program_state(prog, ProgramState.DISCARDED)
             assert prog.state == ProgramState.DISCARDED
+
+    async def test_quarantine_from_infrastructure_states(
+        self, state_manager, make_program, fakeredis_storage
+    ):
+        """QUARANTINED is reachable from states with infrastructure ambiguity."""
+        for state in (
+            ProgramState.QUEUED,
+            ProgramState.RUNNING,
+            ProgramState.DONE,
+        ):
+            prog = make_program(state=state)
+            await fakeredis_storage.add(prog)
+            await state_manager.set_program_state(prog, ProgramState.QUARANTINED)
+            assert prog.state == ProgramState.QUARANTINED
 
 
 # ===================================================================
@@ -271,17 +314,10 @@ class TestMergeStates:
     @pytest.mark.parametrize(
         "current, incoming, expected",
         [
-            # DONE <-> QUEUED: the bidirectional refresh pair.
-            # Both orderings resolve to QUEUED because DONE→QUEUED is a valid
-            # transition: the program should be re-queued regardless of which
-            # side of the race won the write.
-            (ProgramState.DONE, ProgramState.QUEUED, ProgramState.QUEUED),
-            (ProgramState.QUEUED, ProgramState.DONE, ProgramState.QUEUED),
-            # QUEUED -> RUNNING: forward pipeline transition.
-            # RUNNING wins in either order (a DAG already started should not
-            # be rolled back to QUEUED by a stale write).
+            # QUEUED -> RUNNING: forward pipeline launch transition.
             (ProgramState.QUEUED, ProgramState.RUNNING, ProgramState.RUNNING),
-            (ProgramState.RUNNING, ProgramState.QUEUED, ProgramState.RUNNING),
+            # RUNNING -> QUEUED: lease recovery retry transition.
+            (ProgramState.RUNNING, ProgramState.QUEUED, ProgramState.QUEUED),
         ],
     )
     def test_merge_state_pairs(
@@ -295,6 +331,7 @@ class TestMergeStates:
             ProgramState.RUNNING,
             ProgramState.DONE,
             ProgramState.DISCARDED,
+            ProgramState.QUARANTINED,
         ):
             assert merge_states(state, state) == state
 
@@ -305,6 +342,21 @@ class TestMergeStates:
     def test_discarded_always_wins_as_current(self) -> None:
         for state in (ProgramState.QUEUED, ProgramState.RUNNING, ProgramState.DONE):
             assert merge_states(ProgramState.DISCARDED, state) == ProgramState.DISCARDED
+
+    def test_quarantined_always_wins_as_terminal(self) -> None:
+        for state in (ProgramState.QUEUED, ProgramState.RUNNING, ProgramState.DONE):
+            assert (
+                merge_states(state, ProgramState.QUARANTINED)
+                == ProgramState.QUARANTINED
+            )
+            assert (
+                merge_states(ProgramState.QUARANTINED, state)
+                == ProgramState.QUARANTINED
+            )
+
+    def test_done_queued_merge_is_invalid(self) -> None:
+        with pytest.raises(ValueError, match="Cannot merge incompatible states"):
+            merge_states(ProgramState.DONE, ProgramState.QUEUED)
 
 
 # ===================================================================
@@ -342,11 +394,11 @@ class TestStateTransitionRedisRoundTrip:
         assert fetched is not None
         assert fetched.state == ProgramState.DONE
 
-    async def test_done_to_queued_persisted(
+    async def test_running_to_queued_persisted(
         self, state_manager, make_program, fakeredis_storage
     ):
-        """DONE -> QUEUED (refresh cycle) is persisted and verified by re-fetch."""
-        prog = make_program(state=ProgramState.DONE)
+        """RUNNING -> QUEUED (lease retry) is persisted and verified by re-fetch."""
+        prog = make_program(state=ProgramState.RUNNING)
         await fakeredis_storage.add(prog)
 
         await state_manager.set_program_state(prog, ProgramState.QUEUED)

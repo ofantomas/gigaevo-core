@@ -467,7 +467,7 @@ class TestProgramStateTransitions:
     ) -> None:
         """DONE → RUNNING is not a valid transition and must raise ValueError.
 
-        From program_state.py: VALID_TRANSITIONS[DONE] = {QUEUED, DISCARDED}.
+        From program_state.py: DONE can become DISCARDED/QUARANTINED only.
         Attempting DONE → RUNNING must be rejected by validate_transition().
         """
         prog = Program(code="def f(): pass", state=ProgramState.QUEUED)

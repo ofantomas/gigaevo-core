@@ -628,7 +628,7 @@ class TestBatchTransitionScale:
     """batch_transition_state with many programs must complete in bounded time."""
 
     async def test_batch_transition_100_programs(self) -> None:
-        """Transitioning 100 programs DONE->QUEUED must not hang."""
+        """Transitioning 100 programs RUNNING->QUEUED must not hang."""
         storage = _make_storage()
         try:
             sm = ProgramStateManager(storage)
@@ -637,12 +637,11 @@ class TestBatchTransitionScale:
                 p = _make_program(ProgramState.QUEUED)
                 await storage.add(p)
                 await sm.set_program_state(p, ProgramState.RUNNING)
-                await sm.set_program_state(p, ProgramState.DONE)
                 programs.append(p)
 
             count = await asyncio.wait_for(
                 storage.batch_transition_state(
-                    programs, ProgramState.DONE.value, ProgramState.QUEUED.value
+                    programs, ProgramState.RUNNING.value, ProgramState.QUEUED.value
                 ),
                 timeout=HANG_TIMEOUT,
             )
@@ -671,10 +670,7 @@ class TestEngineStepIntegration:
             await storage.close()
 
     async def test_full_step_with_done_programs(self) -> None:
-        """step() with DONE programs ingests them. After refresh transitions
-        programs back to QUEUED, we need a background task to process them
-        (simulating the DAG runner) so _await_idle in Phase 6 terminates.
-        """
+        """step() with DONE programs ingests them without refresh lifecycle flips."""
         storage = _make_storage()
         try:
             engine = _make_engine(storage, generation_timeout=2.0)
@@ -687,8 +683,6 @@ class TestEngineStepIntegration:
             await sm.set_program_state(p, ProgramState.RUNNING)
             await sm.set_program_state(p, ProgramState.DONE)
 
-            # Background: after refresh transitions DONE->QUEUED,
-            # simulate DAG runner completing the program (QUEUED->RUNNING->DONE)
             async def simulate_dag_runner():
                 while True:
                     queued = await storage.get_all_by_status(ProgramState.QUEUED.value)
@@ -880,7 +874,13 @@ class TestDagRunnerSemaphore:
         task = asyncio.create_task(uncancellable())
         await asyncio.sleep(0.01)  # let it start
 
-        info = TaskInfo(task=task, program_id="test-prog", started_at=0.0)
+        info = TaskInfo(
+            task=task,
+            program_id="test-prog",
+            started_at=0.0,
+            attempt_id="attempt-1",
+            last_heartbeat_at=0.0,
+        )
 
         # _cancel_task should complete within 2s + overhead
         storage = _make_storage()
@@ -1032,7 +1032,11 @@ class TestDagRunnerMaintainLaunch:
             prog = _make_program(ProgramState.RUNNING)
             await storage.add(prog)
             runner._active[prog.id] = TaskInfo(
-                task=task, program_id=prog.id, started_at=0.0
+                task=task,
+                program_id=prog.id,
+                started_at=0.0,
+                attempt_id="attempt-1",
+                last_heartbeat_at=0.0,
             )
 
             # _maintain should detect the timeout and clean up
@@ -1070,6 +1074,8 @@ class TestDagRunnerMaintainLaunch:
                 task=task,
                 program_id=prog.id,
                 started_at=__import__("time").monotonic(),
+                attempt_id="attempt-1",
+                last_heartbeat_at=__import__("time").monotonic(),
             )
 
             await asyncio.wait_for(runner._maintain(), timeout=HANG_TIMEOUT)
@@ -1077,8 +1083,8 @@ class TestDagRunnerMaintainLaunch:
         finally:
             await storage.close()
 
-    async def test_orphaned_running_program_discarded(self) -> None:
-        """A RUNNING program not in _active (orphan) must be discarded by _launch."""
+    async def test_orphaned_running_program_requeued(self) -> None:
+        """A stale RUNNING orphan is retried by _launch, not discarded."""
         storage = _make_storage()
         try:
             writer = MagicMock()
@@ -1096,13 +1102,13 @@ class TestDagRunnerMaintainLaunch:
             await storage.add(prog)
             await sm.set_program_state(prog, ProgramState.RUNNING)
 
-            # _launch should detect the orphan and discard it
+            # _launch should detect the stale orphan and requeue it
             await asyncio.wait_for(runner._launch(), timeout=HANG_TIMEOUT)
 
-            # Verify it was discarded
+            # Verify it was requeued
             stored = await storage.get(prog.id)
             assert stored is not None
-            assert stored.state == ProgramState.DISCARDED
+            assert stored.state == ProgramState.QUEUED
         finally:
             await storage.close()
 
@@ -1282,15 +1288,13 @@ class TestStorageBatchContention:
                 await storage.add(pa)
                 await storage.add(pb)
                 await sm.set_program_state(pa, ProgramState.RUNNING)
-                await sm.set_program_state(pa, ProgramState.DONE)
                 await sm.set_program_state(pb, ProgramState.RUNNING)
-                await sm.set_program_state(pb, ProgramState.DONE)
                 batch_a.append(pa)
                 batch_b.append(pb)
 
             async def transition_batch(programs):
                 return await storage.batch_transition_state(
-                    programs, ProgramState.DONE.value, ProgramState.QUEUED.value
+                    programs, ProgramState.RUNNING.value, ProgramState.QUEUED.value
                 )
 
             results = await asyncio.wait_for(

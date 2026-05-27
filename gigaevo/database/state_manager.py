@@ -12,7 +12,9 @@ from gigaevo.programs.program_state import ProgramState, validate_transition
 # Evict per-program locks for these states to prevent unbounded memory growth.
 # DONE programs are picked up by EvolutionEngine (different ProgramStateManager),
 # so the DagRunner's lock is no longer needed.
-_TERMINAL_STATES = frozenset({ProgramState.DISCARDED, ProgramState.DONE})
+_TERMINAL_STATES = frozenset(
+    {ProgramState.DISCARDED, ProgramState.QUARANTINED, ProgramState.DONE}
+)
 
 
 class ProgramStateManager:

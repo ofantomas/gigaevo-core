@@ -49,6 +49,11 @@ class StateAcceptor(ProgramEvolutionAcceptor):
                 f"[StateAcceptor] Program {program.id} rejected: explicitly marked as discarded"
             )
             return False
+        if program.state == ProgramState.QUARANTINED:
+            logger.debug(
+                f"[StateAcceptor] Program {program.id} rejected: infrastructure-quarantined"
+            )
+            return False
 
         if program.state != ProgramState.DONE:
             logger.debug(
