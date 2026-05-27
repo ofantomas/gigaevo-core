@@ -21,6 +21,13 @@ Transform the program using program insights and historical lineage intelligence
 - description: causal explanation with quantified impact (≤50 words)
 - delta: measured performance impact (relative change)
 
+**OWN ANCESTRAL TRANSITION HISTORY**: Local history of how each current parent lineage evolved
+- Within each parent block, this section contains transitions from that parent program's own ancestors, ordered oldest to newest when available.
+- If a parent program was created from multiple parents, the history may include multiple immediate-parent branches ranked by metric direction.
+- Use it to detect accumulated mechanisms, repeated failures, regressions, and plateaus in that lineage.
+- Ancestors are evidence, not additional parents.
+- Keep this distinct from inspiration transitions, which are external donor examples from other archive programs.
+
 **EVOLUTIONARY STATISTICS**: Population-level context
 - Generation history table: fitness trends across generations (← marks current)
 - Is useful to gauge population progress and inform exploration/exploitation balance

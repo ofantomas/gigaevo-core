@@ -32,6 +32,15 @@ metrics_tracker:
   metrics_context: ${metrics_context}
   writer: ${writer}
 
+archive_refresher:
+  _target_: gigaevo.evolution.engine.archive_refresh.ArchiveContextRefresher
+  storage: ${ref:redis_storage}
+  metrics_context: ${metrics_context}
+  memory_provider: ${memory_provider}
+  task_description: ${ref:problem_context::task_description}
+  stage_timeout: ${stage_timeout}
+  include_ancestral_transition_path: ${include_ancestral_transition_path}
+
 # Evolution engine
 evolution_engine:
   _target_: gigaevo.evolution.engine.EvolutionEngine
@@ -43,3 +52,4 @@ evolution_engine:
   metrics_tracker: ${metrics_tracker}
   pre_step_hook: ${pre_step_hook}
   post_run_hook: ${ideas_tracker}
+  archive_refresher: ${archive_refresher}

@@ -23,32 +23,36 @@ DEPTH REQUIREMENTS:
 - When metrics improved, explain the mechanism; when they degraded, explain what was lost
 
 FORMAT:
-- Each insight: JSON with "strategy" and "description" (≤50 words)
+- Return a JSON object with one top-level field: "insights"
+- "insights" must be an array of 3-5 objects
+- Each insight object has "strategy" and "description" (≤50 words)
 - Reference diff blocks: "(@@ -X,Y +A,B @@)"
 - Include quantified impact when metrics changed
 
 EXAMPLES:
-[
-  {{
-    "strategy": "refinement",
-    "description": "(@@ -45,3 +47,5 @@) Changed threshold from 0.5 to 0.3, catching 20% more edge cases where input values cluster near boundary; correlates with +0.018 accuracy gain."
-  }},
-  {{
-    "strategy": "avoidance",
-    "description": "(@@ -78,8 +0,0 @@) Removed greedy selection that was discarding valid candidates too early, allowing exhaustive evaluation; eliminated ValueError on sparse inputs."
-  }},
-  {{
-    "strategy": "exploration",
-    "description": "(@@ -22,4 +24,12 @@) Replaced O(n²) nested loops with sorted-merge approach, trading memory for speed; explains +0.031 efficiency but risks memory pressure on large inputs."
-  }},
-  {{
-    "strategy": "imitation",
-    "description": "(@@ -91,2 +95,2 @@) Preserved parent's fallback return for empty input; maintaining robustness that prevented 3 test failures."
-  }},
-  {{
-    "strategy": "generalization",
-    "description": "(@@ -15 @@) + (@@ -67 @@) Added helper function and replaced 3 inline calculations with calls to it; reduces duplication but single point of failure if helper has bugs."
-  }}
-]
+{{
+  "insights": [
+    {{
+      "strategy": "refinement",
+      "description": "(@@ -45,3 +47,5 @@) Changed threshold from 0.5 to 0.3, catching 20% more edge cases where input values cluster near boundary; correlates with +0.018 accuracy gain."
+    }},
+    {{
+      "strategy": "avoidance",
+      "description": "(@@ -78,8 +0,0 @@) Removed greedy selection that was discarding valid candidates too early, allowing exhaustive evaluation; eliminated ValueError on sparse inputs."
+    }},
+    {{
+      "strategy": "exploration",
+      "description": "(@@ -22,4 +24,12 @@) Replaced O(n²) nested loops with sorted-merge approach, trading memory for speed; explains +0.031 efficiency but risks memory pressure on large inputs."
+    }},
+    {{
+      "strategy": "imitation",
+      "description": "(@@ -91,2 +95,2 @@) Preserved parent's fallback return for empty input; maintaining robustness that prevented 3 test failures."
+    }},
+    {{
+      "strategy": "generalization",
+      "description": "(@@ -15 @@) + (@@ -67 @@) Added helper function and replaced 3 inline calculations with calls to it; reduces duplication but single point of failure if helper has bugs."
+    }}
+  ]
+}}
 
-Respond with only valid JSON array, no commentary.
+Respond with only the valid JSON object, no markdown fences and no commentary.

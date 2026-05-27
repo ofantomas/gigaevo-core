@@ -362,3 +362,81 @@ class TestMutationContextStage:
         context = result.output.data
         assert "Extra info" in context
         assert len(context) > 20  # Non-trivial composite
+
+
+class TestAncestralPathMutationContext:
+    async def test_ancestor_path_renders_separately_from_parents(self):
+        """Ancestor path is its own family-tree section, not folded into Parents."""
+        from gigaevo.llm.agents.lineage import (
+            TransitionAnalysis,
+            TransitionInsight,
+            TransitionInsights,
+        )
+
+        insights = TransitionInsights(
+            insights=[
+                TransitionInsight(strategy="imitation", description="Copied pattern"),
+                TransitionInsight(strategy="avoidance", description="Avoided pitfall"),
+                TransitionInsight(strategy="exploration", description="Tried variant"),
+            ]
+        )
+        path_items = TransitionAnalysisList(
+            items=[
+                TransitionAnalysis(
+                    from_id="aaaa1111",
+                    to_id="bbbb2222",
+                    parent_metrics={"score": 40.0},
+                    child_metrics={"score": 50.0},
+                    diff_blocks=["+ one"],
+                    insights=insights,
+                ),
+                TransitionAnalysis(
+                    from_id="bbbb2222",
+                    to_id="cccc3333",
+                    parent_metrics={"score": 50.0},
+                    child_metrics={"score": 60.0},
+                    diff_blocks=["+ two"],
+                    insights=insights,
+                ),
+            ]
+        )
+
+        stage = _make_stage()
+        stage.attach_inputs(
+            {
+                "metrics": None,
+                "insights": None,
+                "lineage_ancestors": None,
+                "lineage_descendants": None,
+                "lineage_ancestor_path": path_items,
+                "evolutionary_statistics": None,
+                "formatted": None,
+                "memory": None,
+            }
+        )
+        result = await stage.execute(_prog())
+
+        context = result.output.data
+        assert "### Ancestral Transition History" in context
+        assert "#### Step 1: aaaa1111" in context
+        assert "#### Step 2: bbbb2222" in context
+        assert "Copied pattern" in context
+        assert "### Parents" not in context
+
+    async def test_empty_ancestor_path_is_omitted(self):
+        stage = _make_stage()
+        stage.attach_inputs(
+            {
+                "metrics": None,
+                "insights": None,
+                "lineage_ancestors": None,
+                "lineage_descendants": None,
+                "lineage_ancestor_path": TransitionAnalysisList(items=[]),
+                "evolutionary_statistics": None,
+                "formatted": None,
+                "memory": None,
+            }
+        )
+        result = await stage.execute(_prog())
+
+        assert "Ancestral Transition History" not in result.output.data

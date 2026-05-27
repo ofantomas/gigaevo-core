@@ -218,10 +218,15 @@ class TestIngestMultiProgramIsolation:
         # Bad program discarded, good program accepted
         assert engine.metrics.added == 1
         # batch_transition_by_ids called to discard bad program
-        engine.storage.batch_transition_by_ids.assert_called_once_with(
+        engine.storage.batch_transition_by_ids.assert_called_once()
+        args, kwargs = engine.storage.batch_transition_by_ids.call_args
+        assert args == (
             [prog_bad.id],
             ProgramState.DONE.value,
             ProgramState.DISCARDED.value,
+        )
+        assert kwargs["metadata_by_id"][prog_bad.id]["discard_reason"] == (
+            "ingestion_exception"
         )
 
     async def test_all_programs_fail_none_added(self):
@@ -354,32 +359,36 @@ class TestHasActiveDagsLogThrottle:
 
 
 class TestRefreshBatchTransition:
-    """_refresh_archive_programs uses batch_transition_by_ids for efficiency."""
+    """_refresh_archive_programs delegates to lifecycle-neutral context refresh."""
 
-    async def test_refresh_passes_ids_to_batch_transition(self):
-        """batch_transition_by_ids is called with all archive IDs."""
+    async def test_refresh_passes_done_programs_to_refresher(self):
+        """Only DONE archive programs are passed to the context refresher."""
         engine = _engine()
 
-        ids = ["p1", "p2", "p3"]
-        engine.strategy.get_program_ids.return_value = ids
-        engine.storage.batch_transition_by_ids.return_value = 3
+        done = Program(code="def f(): return 1", state=ProgramState.DONE)
+        running = Program(code="def f(): return 2", state=ProgramState.RUNNING)
+        engine.strategy.get_program_ids.return_value = [done.id, running.id]
+        engine.storage.mget.return_value = [done, running]
+        refresher = AsyncMock()
+        refresher.refresh_many.return_value = 1
+        engine._archive_refresher = refresher
 
         count = await engine._refresh_archive_programs()
-        assert count == 3
-        engine.storage.batch_transition_by_ids.assert_called_once_with(
-            ids, ProgramState.DONE.value, ProgramState.QUEUED.value
-        )
+        assert count == 1
+        refresher.refresh_many.assert_awaited_once_with([done])
+        engine.storage.batch_transition_by_ids.assert_not_called()
 
-    async def test_refresh_handles_batch_transition_error(self):
-        """_refresh_archive_programs doesn't crash when batch_transition_by_ids raises."""
+    async def test_refresh_handles_refresher_error(self):
+        """Refresher errors are contained by the refresher contract."""
         engine = _engine()
 
-        engine.strategy.get_program_ids.return_value = ["p1", "p2"]
-        engine.storage.batch_transition_by_ids.side_effect = RuntimeError(
-            "Redis timeout"
-        )
+        done = Program(code="def f(): return 1", state=ProgramState.DONE)
+        engine.strategy.get_program_ids.return_value = [done.id]
+        engine.storage.mget.return_value = [done]
+        refresher = AsyncMock()
+        refresher.refresh_many.return_value = 0
+        engine._archive_refresher = refresher
 
-        # Should not raise — returns 0 gracefully
         count = await engine._refresh_archive_programs()
         assert count == 0
 

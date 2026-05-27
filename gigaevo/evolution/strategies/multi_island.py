@@ -14,6 +14,7 @@ from gigaevo.evolution.strategies.island import (
 )
 from gigaevo.evolution.strategies.island_selector import WeightedIslandSelector
 from gigaevo.evolution.strategies.mutant_router import RandomMutantRouter
+from gigaevo.programs.lifecycle_metadata import mark_discarded
 from gigaevo.programs.program import Program
 from gigaevo.programs.program_state import ProgramState
 
@@ -281,6 +282,12 @@ class MapElitesMultiIsland(EvolutionStrategy):
                     if prog.metadata.get(METADATA_KEY_CURRENT_ISLAND):
                         prog.metadata[METADATA_KEY_CURRENT_ISLAND] = None
                         await island.state_manager.update_program(prog)
+                    mark_discarded(
+                        prog,
+                        reason="archive_remove_by_id",
+                        source="MapElitesMultiIsland.remove_program_by_id",
+                        details={"island_id": island.config.island_id},
+                    )
                     await island.state_manager.set_program_state(
                         prog, ProgramState.DISCARDED
                     )

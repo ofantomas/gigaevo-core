@@ -29,6 +29,7 @@ from gigaevo.programs.stages.complexity import ComputeComplexityStage
 from gigaevo.programs.stages.formatter import FormatterStage
 from gigaevo.programs.stages.insights import InsightsStage
 from gigaevo.programs.stages.insights_lineage import (
+    AncestralTransitionPath,
     LineagesFromAncestors,
     LineageStage,
     LineagesToDescendants,
@@ -161,9 +162,18 @@ class DefaultPipelineBuilder(PipelineBuilder):
         *,
         dag_timeout: float = 3600.0,
         stage_timeout: float = DEFAULT_SIMPLE_STAGE_TIMEOUT,
+        include_ancestral_transition_path: bool = True,
     ):
         super().__init__(ctx, dag_timeout=dag_timeout)
         self._stage_timeout = stage_timeout
+        self._include_ancestral_transition_path = include_ancestral_transition_path
+        logger.info(
+            "[DefaultPipelineBuilder] Resolved stage_timeout={}s dag_timeout={}s "
+            "include_ancestral_transition_path={}",
+            stage_timeout,
+            dag_timeout,
+            include_ancestral_transition_path,
+        )
         self._contribute_default_nodes()
         self._contribute_default_edges()
         self._contribute_default_deps()
@@ -240,6 +250,7 @@ class DefaultPipelineBuilder(PipelineBuilder):
                 max_insights=DEFAULT_MAX_INSIGHTS,
                 timeout=stage_timeout,
                 prompts_dir=prompts_dir,
+                max_attempts=3,
             ),
         )
 
@@ -277,6 +288,7 @@ class DefaultPipelineBuilder(PipelineBuilder):
                 storage=storage,
                 timeout=stage_timeout,
                 prompts_dir=prompts_dir,
+                max_attempts=3,
             ),
         )
 
@@ -297,6 +309,18 @@ class DefaultPipelineBuilder(PipelineBuilder):
                 timeout=stage_timeout,
             ),
         )
+
+        if self._include_ancestral_transition_path:
+            self.add_stage(
+                "AncestralTransitionPath",
+                lambda: AncestralTransitionPath(
+                    storage=storage,
+                    metrics_context=metrics_context,
+                    source_stage_name="LineageStage",
+                    max_transitions=4,
+                    timeout=stage_timeout,
+                ),
+            )
 
         self.add_stage(
             "MemoryContextStage",
@@ -374,6 +398,12 @@ class DefaultPipelineBuilder(PipelineBuilder):
         self.add_data_flow_edge(
             "LineagesFromAncestors", "MutationContextStage", "lineage_ancestors"
         )
+        if self._include_ancestral_transition_path:
+            self.add_data_flow_edge(
+                "AncestralTransitionPath",
+                "MutationContextStage",
+                "lineage_ancestor_path",
+            )
         self.add_data_flow_edge(
             "EvolutionaryStatisticsCollector",
             "MutationContextStage",
@@ -416,13 +446,29 @@ class DefaultPipelineBuilder(PipelineBuilder):
                 ExecutionOrderDependency.always_after("EnsureMetricsStage"),
             ],
         }
+        if self._include_ancestral_transition_path:
+            self._deps["AncestralTransitionPath"] = [
+                ExecutionOrderDependency.always_after("LineageStage"),
+            ]
 
 
 class ContextPipelineBuilder(DefaultPipelineBuilder):
     """Default pipeline with AddContext stage and wiring enabled."""
 
-    def __init__(self, ctx: EvolutionContext, *, dag_timeout: float = 3600.0):
-        super().__init__(ctx, dag_timeout=dag_timeout)
+    def __init__(
+        self,
+        ctx: EvolutionContext,
+        *,
+        dag_timeout: float = 3600.0,
+        stage_timeout: float = DEFAULT_SIMPLE_STAGE_TIMEOUT,
+        include_ancestral_transition_path: bool = True,
+    ):
+        super().__init__(
+            ctx,
+            dag_timeout=dag_timeout,
+            stage_timeout=stage_timeout,
+            include_ancestral_transition_path=include_ancestral_transition_path,
+        )
         self._add_context_stage_and_edges()
 
     def _add_context_stage_and_edges(self) -> None:
@@ -434,7 +480,7 @@ class ContextPipelineBuilder(DefaultPipelineBuilder):
             lambda: CallFileFunction(
                 path=problem_ctx.problem_dir / ProblemLayout.CONTEXT_FILE,
                 function_name="build_context",
-                timeout=DEFAULT_SIMPLE_STAGE_TIMEOUT,
+                timeout=self._stage_timeout,
             ),
         )
 
@@ -445,8 +491,14 @@ class ContextPipelineBuilder(DefaultPipelineBuilder):
 class AlgoTuneSpeedPipelineBuilder(ContextPipelineBuilder):
     """Context pipeline variant using execution speed as the primary fitness."""
 
-    def __init__(self, ctx: EvolutionContext, *, dag_timeout: float = 3600.0):
-        super().__init__(ctx, dag_timeout=dag_timeout)
+    def __init__(
+        self,
+        ctx: EvolutionContext,
+        *,
+        dag_timeout: float = 3600.0,
+        stage_timeout: float = DEFAULT_SIMPLE_STAGE_TIMEOUT,
+    ):
+        super().__init__(ctx, dag_timeout=dag_timeout, stage_timeout=stage_timeout)
         self._add_runtime_fitness_stage()
 
     def _load_runtime_evaluation_config(self) -> tuple[int, int]:
@@ -478,7 +530,7 @@ class AlgoTuneSpeedPipelineBuilder(ContextPipelineBuilder):
                 problem_dir=problem_dir,
                 timing_repetitions=repetitions,
                 warmup_repetitions=warmups,
-                timeout=DEFAULT_SIMPLE_STAGE_TIMEOUT,
+                timeout=self._stage_timeout,
             ),
         )
         self.remove_data_flow_edge("FetchMetrics", "MergeMetricsStage")
@@ -522,9 +574,10 @@ class CMAOptPipelineBuilder(DefaultPipelineBuilder):
         ctx: EvolutionContext,
         *,
         dag_timeout: float = 3600.0,
+        stage_timeout: float = DEFAULT_SIMPLE_STAGE_TIMEOUT,
         optimization_time_budget: float | None = None,
     ):
-        super().__init__(ctx, dag_timeout=dag_timeout)
+        super().__init__(ctx, dag_timeout=dag_timeout, stage_timeout=stage_timeout)
         self._optimization_time_budget = (
             optimization_time_budget
             if optimization_time_budget is not None
@@ -543,7 +596,7 @@ class CMAOptPipelineBuilder(DefaultPipelineBuilder):
             lambda: CallFileFunction(
                 path=problem_ctx.problem_dir / ProblemLayout.CONTEXT_FILE,
                 function_name="build_context",
-                timeout=DEFAULT_SIMPLE_STAGE_TIMEOUT,
+                timeout=self._stage_timeout,
             ),
         )
         self.add_data_flow_edge("AddContext", "CallProgramFunction", "context")
@@ -648,9 +701,10 @@ class OptunaOptPipelineBuilder(DefaultPipelineBuilder):
         ctx: EvolutionContext,
         *,
         dag_timeout: float = 7200.0,
+        stage_timeout: float = DEFAULT_SIMPLE_STAGE_TIMEOUT,
         optimization_time_budget: float | None = None,
     ):
-        super().__init__(ctx, dag_timeout=dag_timeout)
+        super().__init__(ctx, dag_timeout=dag_timeout, stage_timeout=stage_timeout)
         self._optimization_time_budget = (
             optimization_time_budget
             if optimization_time_budget is not None
@@ -669,7 +723,7 @@ class OptunaOptPipelineBuilder(DefaultPipelineBuilder):
             lambda: CallFileFunction(
                 path=problem_ctx.problem_dir / ProblemLayout.CONTEXT_FILE,
                 function_name="build_context",
-                timeout=DEFAULT_SIMPLE_STAGE_TIMEOUT,
+                timeout=self._stage_timeout,
             ),
         )
         self.add_data_flow_edge("AddContext", "CallProgramFunction", "context")
@@ -754,11 +808,11 @@ class OptunaOptPipelineBuilder(DefaultPipelineBuilder):
         # CallValidatorFunction always runs (single source of truth).
         self.add_stage(
             "OptunaPayloadBridge",
-            lambda: OptunaPayloadBridge(timeout=DEFAULT_SIMPLE_STAGE_TIMEOUT),
+            lambda: OptunaPayloadBridge(timeout=self._stage_timeout),
         )
         self.add_stage(
             "PayloadResolver",
-            lambda: PayloadResolver(timeout=DEFAULT_SIMPLE_STAGE_TIMEOUT),
+            lambda: PayloadResolver(timeout=self._stage_timeout),
         )
 
         # Data flow: Optuna → bridge → resolver → validator

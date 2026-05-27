@@ -5,11 +5,11 @@ ALL LLM-related logic lives here - stages are just thin wrappers.
 """
 
 import difflib
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gigaevo.llm.agents.base import LangGraphAgent
 from gigaevo.llm.models import MultiModelRouter
@@ -34,6 +34,13 @@ class TransitionInsights(BaseModel):
     insights: list[TransitionInsight] = Field(
         description="List of 3-5 strategy insights", min_length=3, max_length=5
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_bare_list(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return {"insights": value}
+        return value
 
 
 class TransitionAnalysis(BaseModel):

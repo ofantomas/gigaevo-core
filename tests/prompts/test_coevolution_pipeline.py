@@ -139,6 +139,7 @@ class TestPromptEvolutionPipelineStages:
             "LineageStage",
             "LineagesToDescendants",
             "LineagesFromAncestors",
+            "AncestralTransitionPath",
             "MutationContextStage",
             "EvolutionaryStatisticsCollector",
         }
@@ -151,8 +152,8 @@ class TestPromptEvolutionPipelineStages:
         stats = MagicMock(spec=PromptStatsProvider)
         bp = PromptEvolutionPipelineBuilder(ctx, stats).build_blueprint()
 
-        # 2 prompt-specific + 1 validate + 11 shared = 14
-        assert len(bp.nodes) == 14
+        # 2 prompt-specific + 1 validate + 12 shared = 15
+        assert len(bp.nodes) == 15
 
 
 class TestPromptEvolutionPipelineDataFlow:
@@ -207,6 +208,7 @@ class TestPromptEvolutionPipelineDataFlow:
         assert ("AncestorProgramIds", "LineagesFromAncestors") in edges
         assert ("LineagesToDescendants", "MutationContextStage") in edges
         assert ("LineagesFromAncestors", "MutationContextStage") in edges
+        assert ("AncestralTransitionPath", "MutationContextStage") in edges
         assert ("EvolutionaryStatisticsCollector", "MutationContextStage") in edges
 
     def test_no_call_program_to_validator_edge(self):
@@ -251,6 +253,7 @@ class TestPromptEvolutionPipelineDeps:
         assert ("PromptFitnessStage", "LineageStage") in _edge_pairs(bp)
         assert "LineageStage" in _dep_names(bp, "LineagesToDescendants")
         assert "LineageStage" in _dep_names(bp, "LineagesFromAncestors")
+        assert "LineageStage" in _dep_names(bp, "AncestralTransitionPath")
 
     def test_statistics_after_metrics(self):
         ctx = _make_ctx()

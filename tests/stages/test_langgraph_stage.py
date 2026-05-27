@@ -77,6 +77,19 @@ class ShortCircuitPreprocess(LangGraphStage):
         )
 
 
+class PartialOnExhaustion(LangGraphStage):
+    """Subclass that converts exhausted agent failures into partial output."""
+
+    InputsModel = VoidInput
+    OutputModel = SingleFieldOutput
+    cache_handler = NO_CACHE
+
+    async def partial_output_on_exhausted(
+        self, program: Program, exc: BaseException
+    ) -> SingleFieldOutput:
+        return SingleFieldOutput(value=-1)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -246,6 +259,26 @@ class TestAgentExceptionHandling:
 
         assert result.status == StageState.FAILED
         assert "bad input" in result.error.message
+
+    async def test_exhausted_agent_can_return_partial_output(self):
+        """Interpretation stages may complete with partial output after retries."""
+        agent = _mock_agent(side_effect=ValueError("bad structured output"))
+        stage = PartialOnExhaustion(agent=agent, timeout=5.0, max_attempts=2)
+        stage.attach_inputs({})
+        program = _prog()
+        result = await stage.execute(program)
+
+        assert result.status == StageState.COMPLETED
+        assert result.output.value == -1
+        assert agent.arun.await_count == 2
+        assert (
+            program.metadata["interpretation"]["PartialOnExhaustion"]["status"]
+            == "partial"
+        )
+        assert program.metadata["interpretation_status"] == "partial"
+        assert program.metadata["interpretation_partial_stages"] == [
+            "PartialOnExhaustion"
+        ]
 
 
 # ---------------------------------------------------------------------------

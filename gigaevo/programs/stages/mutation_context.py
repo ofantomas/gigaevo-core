@@ -36,6 +36,7 @@ class MutationContextInputs(StageIO):
       - insights: ProgramInsights wrapped by the Insights stage output
       - lineage_ancestors: TransitionAnalysisList (from collector+lineage stages on ancestors)
       - lineage_descendants: TransitionAnalysisList (from collector+lineage stages on descendants)
+      - lineage_ancestor_path: TransitionAnalysisList (stored analyses along one parent chain)
       - evolutionary_statistics: EvolutionaryStatistics (from EvolutionaryStatisticsCollector)
       - formatted: preformatted string (e.g. from FormatterStage) for mutation prompt
     """
@@ -44,6 +45,7 @@ class MutationContextInputs(StageIO):
     insights: InsightsOutput | None
     lineage_ancestors: TransitionAnalysisList | None
     lineage_descendants: TransitionAnalysisList | None
+    lineage_ancestor_path: TransitionAnalysisList | None
     evolutionary_statistics: EvolutionaryStatistics | None
     formatted: StringContainer | None
     memory: StringContainer | None
@@ -94,12 +96,17 @@ class MutationContextStage(Stage):
         if params.lineage_descendants is not None:
             descendant_lineages = params.lineage_descendants.items
 
-        if ancestor_lineages or descendant_lineages:
+        ancestor_path: list[TransitionAnalysis] = []
+        if params.lineage_ancestor_path is not None:
+            ancestor_path = params.lineage_ancestor_path.items
+
+        if ancestor_path or ancestor_lineages or descendant_lineages:
             formatter = MetricsFormatter(self.metrics_context)
             contexts.append(
                 FamilyTreeMutationContext(
                     ancestors=ancestor_lineages,
                     descendants=descendant_lineages,
+                    ancestor_path=ancestor_path,
                     metrics_formatter=formatter,
                 )
             )

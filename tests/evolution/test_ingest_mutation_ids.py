@@ -77,8 +77,8 @@ class TestIngestMutationIdsNone:
         call_args = engine.storage.mget.call_args
         assert set(call_args[0][0]) == {p1.id, p2.id}
 
-    async def test_none_does_not_call_batch_move(self) -> None:
-        """mutation_ids=None: batch_move_status_sets is NOT called for stale discard."""
+    async def test_none_does_not_call_stale_batch_discard(self) -> None:
+        """mutation_ids=None: stale fast-discard is not used."""
         engine = _make_engine()
         engine.config.program_acceptor = MagicMock()
         engine.config.program_acceptor.is_accepted.return_value = True
@@ -92,6 +92,7 @@ class TestIngestMutationIdsNone:
         await engine._ingest_completed_programs(mutation_ids=None)
 
         engine.storage.batch_move_status_sets.assert_not_called()
+        engine.storage.batch_transition_by_ids.assert_not_called()
 
 
 # ===========================================================================
@@ -115,10 +116,16 @@ class TestIngestMutationIdsEmpty:
 
         await engine._ingest_completed_programs(mutation_ids=[])
 
-        # All should be batch-discarded as stale
-        engine.storage.batch_move_status_sets.assert_called_once()
-        stale_ids = engine.storage.batch_move_status_sets.call_args[0][0]
+        # All should be batch-discarded as stale, with explicit metadata.
+        engine.storage.batch_transition_by_ids.assert_called_once()
+        stale_ids = engine.storage.batch_transition_by_ids.call_args[0][0]
         assert set(stale_ids) == {stale1.id, stale2.id}
+        metadata_by_id = engine.storage.batch_transition_by_ids.call_args.kwargs[
+            "metadata_by_id"
+        ]
+        assert metadata_by_id[stale1.id]["discard_reason"] == (
+            "stale_done_not_in_mutation_batch"
+        )
 
     async def test_empty_list_does_not_deserialize(self) -> None:
         """mutation_ids=[]: no programs should be deserialized (mget not called)."""
@@ -158,10 +165,16 @@ class TestIngestMutationIdsPartition:
 
         await engine._ingest_completed_programs(mutation_ids=[new_prog.id])
 
-        # Stale program should be batch-discarded
-        engine.storage.batch_move_status_sets.assert_called_once()
-        stale_ids = engine.storage.batch_move_status_sets.call_args[0][0]
+        # Stale program should be batch-discarded with explicit metadata.
+        engine.storage.batch_transition_by_ids.assert_called()
+        stale_ids = engine.storage.batch_transition_by_ids.call_args[0][0]
         assert stale_ids == [stale_prog.id]
+        metadata_by_id = engine.storage.batch_transition_by_ids.call_args.kwargs[
+            "metadata_by_id"
+        ]
+        assert metadata_by_id[stale_prog.id]["discard_reason"] == (
+            "stale_done_not_in_mutation_batch"
+        )
 
         # New program should be deserialized
         mget_ids = engine.storage.mget.call_args[0][0]
@@ -182,6 +195,7 @@ class TestIngestMutationIdsPartition:
         # Archive programs are filtered before mutation_ids check
         engine.storage.mget.assert_not_called()
         engine.storage.batch_move_status_sets.assert_not_called()
+        engine.storage.batch_transition_by_ids.assert_not_called()
 
     async def test_all_non_archive_are_in_mutation_ids(self) -> None:
         """When every non-archive DONE program is in mutation_ids, no stale discard."""
@@ -199,11 +213,12 @@ class TestIngestMutationIdsPartition:
         await engine._ingest_completed_programs(mutation_ids=[p1.id, p2.id])
 
         engine.storage.batch_move_status_sets.assert_not_called()
+        engine.storage.batch_transition_by_ids.assert_not_called()
         mget_ids = engine.storage.mget.call_args[0][0]
         assert set(mget_ids) == {p1.id, p2.id}
 
     async def test_batch_discard_exception_doesnt_crash(self) -> None:
-        """If batch_move_status_sets raises, ingestion should continue."""
+        """If stale batch discard raises, ingestion should continue."""
         engine = _make_engine()
         engine.config.program_acceptor = MagicMock()
         engine.config.program_acceptor.is_accepted.return_value = True
@@ -214,7 +229,9 @@ class TestIngestMutationIdsPartition:
         engine.storage.get_ids_by_status.return_value = [new_prog.id, stale_prog.id]
         engine.storage.mget.return_value = [new_prog]
         engine.strategy.get_program_ids.return_value = []
-        engine.storage.batch_move_status_sets.side_effect = RuntimeError("Redis error")
+        engine.storage.batch_transition_by_ids.side_effect = RuntimeError(
+            "Redis error"
+        )
 
         # Should NOT raise — exception is caught and logged
         await engine._ingest_completed_programs(mutation_ids=[new_prog.id])

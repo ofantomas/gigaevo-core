@@ -284,12 +284,12 @@ class TestEpochRefresh:
     async def test_calls_refresh_and_reindex(self) -> None:
         """Epoch refresh calls _refresh_archive_programs and reindex_archive."""
         engine = _make_ss_engine()
-        engine.strategy.get_program_ids.return_value = ["id1"]
-        engine.storage.batch_transition_by_ids.return_value = 1
+        engine._refresh_archive_programs = AsyncMock(return_value=1)
 
         await engine._epoch_refresh()
 
-        engine.storage.batch_transition_by_ids.assert_called()
+        engine._refresh_archive_programs.assert_awaited_once()
+        engine.storage.batch_transition_by_ids.assert_not_called()
         engine.strategy.reindex_archive.assert_called()
 
 

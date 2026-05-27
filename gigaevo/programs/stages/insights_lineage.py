@@ -74,6 +74,11 @@ class LineageStage(LangGraphStage):
         ids: list[str] = list(program.lineage.parents)
         return {"parents": await self.storage.mget(ids)}
 
+    async def partial_output_on_exhausted(
+        self, program: Program, exc: BaseException
+    ) -> LineageAnalysesOutput:
+        return LineageAnalysesOutput(analyses=[])
+
 
 class LineagesToDescendantsInputs(StageIO):
     descendant_ids: ListOf[str]
@@ -189,3 +194,182 @@ class LineagesFromAncestors(Stage):
             )
 
         return TransitionAnalysisList(items=out)
+
+
+@StageRegistry.register(
+    description="Collect stored lineage analyses along bounded parent ancestry paths."
+)
+class AncestralTransitionPath(Stage):
+    """Return stored transition analyses from bounded ancestral history.
+
+    For a linear path p1 -> p2 -> p3 -> p4 -> p5, executing this stage on p5
+    returns analyses for p1->p2, p2->p3, p3->p4 in chronological order. The
+    immediate parent->current transition is intentionally excluded because
+    LineagesFromAncestors already renders it in the Parents section.
+    If a program has multiple parents, the stage starts one branch per immediate
+    parent, ranks branches by direction-aware primary metric, and then follows
+    the best parent chain behind each branch. Analyses are read from each child
+    program's stored ``LineageStage`` result; this stage never calls the lineage
+    LLM.
+    """
+
+    InputsModel: type[StageIO] = VoidInput
+    OutputModel = TransitionAnalysisList
+    cache_handler = NO_CACHE
+
+    def __init__(
+        self,
+        *,
+        storage: ProgramStorage,
+        metrics_context: MetricsContext,
+        source_stage_name: str = "LineageStage",
+        max_transitions: int = 4,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.storage = storage
+        self.metrics_context = metrics_context
+        self.source_stage_name = source_stage_name
+        self.max_transitions = max(1, int(max_transitions))
+
+    async def compute(
+        self, program: Program
+    ) -> TransitionAnalysisList | ProgramStageResult:
+        ranked_parents = await self._rank_parents(program)
+        if not ranked_parents:
+            return ProgramStageResult.skipped(
+                message="No parents available for ancestral transition path",
+                stage=self.stage_name,
+            )
+
+        frontiers: list[tuple[int, Program, Program, set[str]]] = []
+        for branch_index, immediate_parent in enumerate(ranked_parents):
+            next_parent = await self._select_parent(immediate_parent)
+            if next_parent is not None:
+                frontiers.append(
+                    (
+                        branch_index,
+                        immediate_parent,
+                        next_parent,
+                        {program.id, immediate_parent.id},
+                    )
+                )
+
+        if not frontiers:
+            return ProgramStageResult.skipped(
+                message=(
+                    "No ancestral transitions available behind immediate parents"
+                ),
+                stage=self.stage_name,
+            )
+
+        collected: list[tuple[int, int, int, TransitionAnalysis]] = []
+        seen_edges: set[tuple[str, str]] = set()
+        sequence = 0
+
+        for _depth in range(self.max_transitions):
+            if not frontiers or len(collected) >= self.max_transitions:
+                break
+
+            next_frontiers: list[tuple[int, Program, Program, set[str]]] = []
+            for branch_index, child, parent, visited in frontiers:
+                if len(collected) >= self.max_transitions:
+                    break
+                if parent.id in visited:
+                    logger.warning(
+                        "[AncestralTransitionPath] Stopping at cycle {} -> {}",
+                        parent.id,
+                        child.id,
+                    )
+                    continue
+
+                edge = (parent.id, child.id)
+                if edge not in seen_edges:
+                    analysis = self._find_analysis(child, parent.id)
+                    if analysis is not None:
+                        collected.append(
+                            (
+                                child.lineage.generation,
+                                branch_index,
+                                sequence,
+                                analysis,
+                            )
+                        )
+                        sequence += 1
+                        seen_edges.add(edge)
+                        logger.info(
+                            "[AncestralTransitionPath] Added transition for {} -> {}",
+                            analysis.from_id,
+                            analysis.to_id,
+                        )
+
+                next_parent = await self._select_parent(parent)
+                if next_parent is not None:
+                    next_frontiers.append(
+                        (branch_index, parent, next_parent, visited | {parent.id})
+                    )
+
+            frontiers = next_frontiers
+
+        collected.sort(key=lambda item: (item[0], item[1], item[2]))
+        return TransitionAnalysisList(items=[analysis for *_rest, analysis in collected])
+
+    async def _rank_parents(self, child: Program) -> list[Program]:
+        parent_ids = list(child.lineage.parents)
+        if not parent_ids:
+            return []
+
+        parents = await self.storage.mget(parent_ids)
+        if not parents:
+            logger.info(
+                "[AncestralTransitionPath] No stored parents found for {}",
+                child.id,
+            )
+            return []
+
+        primary_key = self.metrics_context.get_primary_key()
+        higher_is_better = self.metrics_context.is_higher_better(primary_key)
+        indexed = {parent.id: index for index, parent in enumerate(parents)}
+        scored = [
+            (parent.metrics[primary_key], indexed[parent.id], parent)
+            for parent in parents
+            if primary_key in parent.metrics
+        ]
+        unscored = [parent for parent in parents if primary_key not in parent.metrics]
+
+        if unscored:
+            logger.warning(
+                "[AncestralTransitionPath] {} parents for {} lack primary metric {}; "
+                "placing them after scored parents",
+                len(unscored),
+                child.id,
+                primary_key,
+            )
+
+        if higher_is_better:
+            scored.sort(key=lambda item: (-item[0], item[1]))
+        else:
+            scored.sort(key=lambda item: (item[0], item[1]))
+        ordered = [parent for _score, _index, parent in scored]
+        ordered.extend(sorted(unscored, key=lambda parent: indexed[parent.id]))
+        return ordered
+
+    async def _select_parent(self, child: Program) -> Program | None:
+        ranked = await self._rank_parents(child)
+        return ranked[0] if ranked else None
+
+    def _find_analysis(
+        self, child: Program, parent_id: str
+    ) -> TransitionAnalysis | None:
+        res: ProgramStageResult | None = child.stage_results.get(self.source_stage_name)
+        if not res or res.output is None:
+            return None
+
+        analyses = getattr(res.output, "analyses", None)
+        if analyses is None:
+            return None
+
+        for analysis in analyses:
+            if analysis.from_id == parent_id and analysis.to_id == child.id:
+                return analysis
+        return None

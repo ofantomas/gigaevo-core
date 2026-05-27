@@ -11,6 +11,7 @@ from loguru import logger
 from gigaevo.database.program_storage import ProgramStorage
 from gigaevo.database.state_manager import ProgramStateManager
 from gigaevo.evolution.engine.config import EngineConfig
+from gigaevo.evolution.engine.archive_refresh import ArchiveContextRefresher
 from gigaevo.evolution.engine.hooks import NullPostRunHook, PostRunHook
 from gigaevo.evolution.engine.metrics import EngineMetrics
 from gigaevo.evolution.engine.mutation import (
@@ -23,6 +24,7 @@ from gigaevo.evolution.mutation.mutation_operator import (
 )
 from gigaevo.evolution.strategies.base import EvolutionStrategy
 from gigaevo.llm.bandit import BanditModelRouter, MutationOutcome
+from gigaevo.programs.lifecycle_metadata import build_discard_metadata
 from gigaevo.programs.program import EXCLUDE_STAGE_RESULTS, Program
 from gigaevo.programs.program_state import ProgramState
 from gigaevo.utils.metrics_collector import start_metrics_collector
@@ -42,8 +44,8 @@ class EvolutionEngine:
       2) Select elites & create mutants
       3) Wait for mutants' DAGs to finish (idle again)
       4) Ingest completed mutants
-      5) Refresh all archive programs (DONE -> QUEUED)
-      6) Wait for refresh DAGs to finish (idle)
+      5) Refresh archive mutation contexts without lifecycle transitions
+      6) Reindex archive if refreshed
     All state writes go through ProgramStateManager; storage is read-oriented here.
     """
 
@@ -57,6 +59,7 @@ class EvolutionEngine:
         metrics_tracker: MetricsTracker,
         pre_step_hook: Callable[[], Awaitable[None]] | None = None,
         post_run_hook: PostRunHook | None = None,
+        archive_refresher: ArchiveContextRefresher | None = None,
     ):
         self.storage = storage
         self.strategy = strategy
@@ -85,6 +88,7 @@ class EvolutionEngine:
         self._metrics_tracker = metrics_tracker
         self._pre_step_hook = pre_step_hook
         self._post_run_hook = post_run_hook or NullPostRunHook()
+        self._archive_refresher = archive_refresher
 
         logger.info(
             "[EvolutionEngine] Init | strategy={}, acceptor={}",
@@ -242,19 +246,14 @@ class EvolutionEngine:
         # objects and only fetch newly added/removed IDs.
         self.storage.snapshot.bump(incremental=True)
 
-        # Phase 5: refresh all archive programs (to re-run lineage/descendant-aware stages)
+        # Phase 5: refresh archive context without changing program lifecycle
         refreshed = await self._refresh_archive_programs()
         logger.debug(
             "[EvolutionEngine] gen={} Phase 5: Refreshed {} program(s)", gen, refreshed
         )
 
-        # Phase 6: wait for refresh DAGs to finish
+        # Phase 6: refresh is inline; no archive DAGs should be queued
         if refreshed:
-            await self._await_idle()
-            logger.debug(
-                "[EvolutionEngine] gen={} Phase 6: Refresh DAGs finished (idle)", gen
-            )
-
             # Phase 7: reindex archive with updated metrics (e.g., prompt fitness)
             await self.strategy.reindex_archive()
             logger.debug("[EvolutionEngine] gen={} Phase 7: Archive reindexed", gen)
@@ -524,10 +523,20 @@ class EvolutionEngine:
                     len(stale_ids),
                 )
                 try:
-                    await self.storage.batch_move_status_sets(
+                    await self.storage.batch_transition_by_ids(
                         stale_ids,
                         ProgramState.DONE.value,
                         ProgramState.DISCARDED.value,
+                        metadata_by_id={
+                            pid: build_discard_metadata(
+                                reason="stale_done_not_in_mutation_batch",
+                                source="EvolutionEngine._ingest_completed_programs",
+                                details={
+                                    "generation": self.metrics.total_generations,
+                                },
+                            )
+                            for pid in stale_ids
+                        },
                     )
                 except Exception as e:
                     logger.error(
@@ -571,6 +580,7 @@ class EvolutionEngine:
         # Collect IDs of rejected programs for a single batch transition
         # at the end, instead of one Redis write per reject.
         reject_ids: list[str] = []
+        reject_metadata_by_id: dict[str, dict[str, Any]] = {}
 
         for prog in completed:
             try:
@@ -584,6 +594,14 @@ class EvolutionEngine:
                     )
                     await self._notify_hook(prog, MutationOutcome.REJECTED_ACCEPTOR)
                     reject_ids.append(prog.id)
+                    reject_metadata_by_id[prog.id] = build_discard_metadata(
+                        reason="acceptor_rejected",
+                        source="EvolutionEngine._ingest_completed_programs",
+                        details={
+                            "acceptor": type(self.config.program_acceptor).__name__,
+                            "metrics": dict(prog.metrics),
+                        },
+                    )
                 elif await self.strategy.add(prog):
                     # accepted by strategy — stays DONE until next refresh
                     added += 1
@@ -603,6 +621,14 @@ class EvolutionEngine:
                     )
                     await self._notify_hook(prog, MutationOutcome.REJECTED_STRATEGY)
                     reject_ids.append(prog.id)
+                    reject_metadata_by_id[prog.id] = build_discard_metadata(
+                        reason="strategy_rejected",
+                        source="EvolutionEngine._ingest_completed_programs",
+                        details={
+                            "strategy": type(self.strategy).__name__,
+                            "metrics": dict(prog.metrics),
+                        },
+                    )
             except Exception as e:
                 # Isolate per-program failures: log and discard the offending program
                 # so the remaining programs in this batch are still processed.
@@ -612,6 +638,14 @@ class EvolutionEngine:
                     e,
                 )
                 reject_ids.append(prog.id)
+                reject_metadata_by_id[prog.id] = build_discard_metadata(
+                    reason="ingestion_exception",
+                    source="EvolutionEngine._ingest_completed_programs",
+                    details={
+                        "error_type": type(e).__name__,
+                        "error": str(e)[:500],
+                    },
+                )
 
         # Batch DONE → DISCARDED (raw JSON patch, no Pydantic serialization).
         # Also update in-memory state so any downstream code sees DISCARDED.
@@ -619,12 +653,15 @@ class EvolutionEngine:
             reject_set = set(reject_ids)
             for prog in completed:
                 if prog.id in reject_set:
+                    if updates := reject_metadata_by_id.get(prog.id):
+                        prog.metadata.update(updates)
                     prog.state = ProgramState.DISCARDED
             try:
                 await self.storage.batch_transition_by_ids(
                     reject_ids,
                     ProgramState.DONE.value,
                     ProgramState.DISCARDED.value,
+                    metadata_by_id=reject_metadata_by_id,
                 )
             except Exception as e:
                 logger.error(
@@ -644,29 +681,32 @@ class EvolutionEngine:
         )
 
     async def _refresh_archive_programs(self) -> int:
-        """Flip all archive programs from DONE to QUEUED so lineage/descendant-aware stages re-run."""
+        """Refresh archive mutation context without changing program lifecycle."""
+        if self._archive_refresher is None:
+            logger.warning(
+                "[EvolutionEngine] Archive refresh skipped: no archive_refresher configured"
+            )
+            return 0
+
         program_ids_to_refresh = await self.strategy.get_program_ids()
 
         if not program_ids_to_refresh:
             return 0
 
-        try:
-            count = await self.storage.batch_transition_by_ids(
-                program_ids_to_refresh,
-                ProgramState.DONE.value,
-                ProgramState.QUEUED.value,
-            )
-        except Exception as e:
-            logger.error(
-                "[EvolutionEngine] gen={} batch_transition_by_ids failed: {}",
+        programs = await self.storage.mget(program_ids_to_refresh)
+        done_programs = [p for p in programs if p.state == ProgramState.DONE]
+        skipped = len(program_ids_to_refresh) - len(done_programs)
+        if skipped:
+            logger.warning(
+                "[EvolutionEngine] gen={} skipped {} non-DONE archive program(s) during refresh",
                 self.metrics.total_generations,
-                e,
+                skipped,
             )
-            return 0
 
+        count = await self._archive_refresher.refresh_many(done_programs)
         if count:
             logger.info(
-                "[EvolutionEngine] gen={} Submitted {} program(s) for refresh",
+                "[EvolutionEngine] gen={} Refreshed context for {} archive program(s)",
                 self.metrics.total_generations,
                 count,
             )

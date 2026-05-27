@@ -15,6 +15,9 @@ pipeline_builder:
   _target_: gigaevo.config.helpers.select_pipeline_builder
   problem_context: ${problem_context}
   evolution_context: ${evolution_context}
+  stage_timeout: ${stage_timeout}
+  dag_timeout: ${dag_timeout}
+  include_ancestral_transition_path: ${include_ancestral_transition_path}
 
 # Build DAG blueprint
 dag_blueprint:

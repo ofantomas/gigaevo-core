@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from gigaevo.evolution.mutation.constants import (  # noqa: F401 — re-export
     MUTATION_CONTEXT_METADATA_KEY,
@@ -69,8 +69,9 @@ class FamilyTreeMutationContext(MutationContext):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    ancestors: list[TransitionAnalysis]
-    descendants: list[TransitionAnalysis]
+    ancestors: list[TransitionAnalysis] = Field(default_factory=list)
+    descendants: list[TransitionAnalysis] = Field(default_factory=list)
+    ancestor_path: list[TransitionAnalysis] = Field(default_factory=list)
     metrics_formatter: MetricsFormatter
 
     def format(self) -> str:
@@ -78,10 +79,23 @@ class FamilyTreeMutationContext(MutationContext):
         lines = ["## Family Tree (Current State)", ""]
 
         logger.debug(
-            "[FamilyTreeMutationContext] Formatting with {} ancestors and {} descendants",
+            "[FamilyTreeMutationContext] Formatting with {} ancestor path steps, "
+            "{} ancestors and {} descendants",
+            len(self.ancestor_path),
             len(self.ancestors),
             len(self.descendants),
         )
+
+        if self.ancestor_path:
+            lines.append("### Ancestral Transition History")
+            lines.append("")
+            for i, analysis in enumerate(self.ancestor_path):
+                lines.append(
+                    f"#### Step {i + 1}: {analysis.from_id[:8]} → {analysis.to_id[:8]}"
+                )
+                lines.append("")
+                lines.append(self._format_lineage_block(analysis))
+                lines.append("")
 
         if self.ancestors:
             lines.append("### Parents")

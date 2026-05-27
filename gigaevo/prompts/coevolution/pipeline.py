@@ -22,6 +22,7 @@ from gigaevo.programs.stages.collector import (
 )
 from gigaevo.programs.stages.complexity import ComputeComplexityStage
 from gigaevo.programs.stages.insights_lineage import (
+    AncestralTransitionPath,
     LineagesFromAncestors,
     LineagesToDescendants,
 )
@@ -148,6 +149,13 @@ class PromptEvolutionPipelineBuilder:
                 source_stage_name="LineageStage",
                 timeout=st,
             ),
+            "AncestralTransitionPath": lambda: AncestralTransitionPath(
+                storage=storage,
+                metrics_context=metrics_context,
+                source_stage_name="LineageStage",
+                max_transitions=4,
+                timeout=st,
+            ),
             "MutationContextStage": lambda: MutationContextStage(
                 metrics_context=metrics_context,
                 timeout=st,
@@ -226,6 +234,11 @@ class PromptEvolutionPipelineBuilder:
                 input_name="lineage_ancestors",
             ),
             DataFlowEdge.create(
+                source="AncestralTransitionPath",
+                destination="MutationContextStage",
+                input_name="lineage_ancestor_path",
+            ),
+            DataFlowEdge.create(
                 source="EvolutionaryStatisticsCollector",
                 destination="MutationContextStage",
                 input_name="evolutionary_statistics",
@@ -245,6 +258,9 @@ class PromptEvolutionPipelineBuilder:
                 ExecutionOrderDependency.always_after("LineageStage"),
             ],
             "LineagesFromAncestors": [
+                ExecutionOrderDependency.always_after("LineageStage"),
+            ],
+            "AncestralTransitionPath": [
                 ExecutionOrderDependency.always_after("LineageStage"),
             ],
             "EvolutionaryStatisticsCollector": [

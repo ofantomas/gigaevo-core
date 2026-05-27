@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 from loguru import logger
@@ -7,11 +9,13 @@ from loguru import logger
 from gigaevo.llm.agents.base import LangGraphAgent
 from gigaevo.programs.core_types import (
     ProgramStageResult,
+    StageError,
     StageIO,
     VoidInput,
     VoidOutput,
 )
 from gigaevo.programs.program import Program
+from gigaevo.programs.lifecycle_metadata import mark_interpretation_partial
 from gigaevo.programs.stages.base import Stage
 
 
@@ -43,16 +47,21 @@ class LangGraphStage(Stage):
         *,
         agent: LangGraphAgent,
         program_kwarg: str | None = None,
+        max_attempts: int = 1,
+        retry_backoff_seconds: float = 2.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.agent = agent
         self.program_kwarg = program_kwarg
+        self.max_attempts = max(1, int(max_attempts))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
         logger.info(
-            "[{}] Initialized with agent={} program_kwarg={}",
+            "[{}] Initialized with agent={} program_kwarg={} max_attempts={}",
             self.stage_name,
             getattr(agent, "__class__", type(agent)).__name__,
             self.program_kwarg,
+            self.max_attempts,
         )
 
     async def preprocess(
@@ -104,6 +113,17 @@ class LangGraphStage(Stage):
             f"cannot coerce to {self.__class__.OutputModel.__name__}"
         )
 
+    async def partial_output_on_exhausted(
+        self, program: Program, exc: BaseException
+    ) -> StageIO | None:
+        """Return a partial output after retries are exhausted, or None to fail.
+
+        LLM interpretation stages can override this to keep valid programs usable
+        when interpretation is unavailable. Validation and execution stages should
+        generally keep the default hard-failure behavior.
+        """
+        return None
+
     async def _agent_call(self, kwargs: dict[str, Any]) -> Any:
         return await self.agent.arun(**kwargs)
 
@@ -122,8 +142,54 @@ class LangGraphStage(Stage):
                 )
             kwargs[self.program_kwarg] = program
 
-        # 3) Call agent
-        result = await self._agent_call(kwargs)
+        # 3) Call agent with bounded immediate retries.
+        deadline = time.monotonic() + self.timeout
+        last_exc: BaseException | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                remaining = max(0.1, deadline - time.monotonic())
+                result = await asyncio.wait_for(
+                    self._agent_call(kwargs), timeout=remaining
+                )
+                # 4) Postprocess
+                return await self.postprocess(program, result)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= self.max_attempts:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                sleep_s = min(self.retry_backoff_seconds * attempt, remaining)
+                logger.warning(
+                    "[{}] {} attempt {}/{} failed: {}; retrying in {:.1f}s",
+                    self.stage_name,
+                    program.id[:8],
+                    attempt,
+                    self.max_attempts,
+                    str(exc)[:200],
+                    sleep_s,
+                )
+                if sleep_s > 0:
+                    await asyncio.sleep(sleep_s)
 
-        # 4) Postprocess
-        return await self.postprocess(program, result)
+        assert last_exc is not None
+        mark_interpretation_partial(
+            program,
+            stage_name=self.stage_name,
+            attempts=self.max_attempts,
+            exc=last_exc,
+        )
+        partial_output = await self.partial_output_on_exhausted(program, last_exc)
+        if partial_output is not None:
+            logger.warning(
+                "[{}] {} exhausted {}/{} attempts; continuing with partial output",
+                self.stage_name,
+                program.id[:8],
+                self.max_attempts,
+                self.max_attempts,
+            )
+            return partial_output
+        return ProgramStageResult.failure(
+            error=StageError.from_exception(last_exc, stage=self.stage_name)
+        )

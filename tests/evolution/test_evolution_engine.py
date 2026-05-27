@@ -65,19 +65,22 @@ def _prog(state: ProgramState = ProgramState.DONE) -> Program:
 
 
 class TestRefreshArchivePrograms:
-    async def test_calls_batch_transition_by_ids(self) -> None:
-        """_refresh_archive_programs passes all archive IDs to batch_transition_by_ids."""
+    async def test_refresh_uses_refresher_without_lifecycle_transition(self) -> None:
+        """Archive refresh recomputes context and does not requeue elites."""
         engine = _make_engine()
-        ids = ["id1", "id2", "id3"]
-        engine.strategy.get_program_ids.return_value = ids
-        engine.storage.batch_transition_by_ids.return_value = 2
+        done_prog = _prog(ProgramState.DONE)
+        running_prog = _prog(ProgramState.RUNNING)
+        engine.strategy.get_program_ids.return_value = [done_prog.id, running_prog.id]
+        engine.storage.mget.return_value = [done_prog, running_prog]
+        refresher = AsyncMock()
+        refresher.refresh_many.return_value = 1
+        engine._archive_refresher = refresher
 
         count = await engine._refresh_archive_programs()
 
-        assert count == 2
-        engine.storage.batch_transition_by_ids.assert_called_once_with(
-            ids, ProgramState.DONE.value, ProgramState.QUEUED.value
-        )
+        assert count == 1
+        refresher.refresh_many.assert_awaited_once_with([done_prog])
+        engine.storage.batch_transition_by_ids.assert_not_called()
 
     async def test_empty_archive_returns_zero(self) -> None:
         """No archive programs → no transitions, returns 0."""
@@ -88,6 +91,15 @@ class TestRefreshArchivePrograms:
 
         assert count == 0
         engine.storage.batch_transition_by_ids.assert_not_called()
+
+    async def test_no_refresher_configured_returns_zero(self) -> None:
+        engine = _make_engine()
+        engine.strategy.get_program_ids.return_value = ["id1"]
+
+        count = await engine._refresh_archive_programs()
+
+        assert count == 0
+        engine.storage.mget.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -139,10 +151,15 @@ class TestIngestCompletedPrograms:
         await engine._ingest_completed_programs()
 
         engine.strategy.add.assert_not_called()
-        engine.storage.batch_transition_by_ids.assert_called_once_with(
+        engine.storage.batch_transition_by_ids.assert_called_once()
+        args, kwargs = engine.storage.batch_transition_by_ids.call_args
+        assert args == (
             [rej_prog.id],
             ProgramState.DONE.value,
             ProgramState.DISCARDED.value,
+        )
+        assert kwargs["metadata_by_id"][rej_prog.id]["discard_reason"] == (
+            "acceptor_rejected"
         )
 
     async def test_rejected_by_strategy_is_discarded(self) -> None:
@@ -159,10 +176,15 @@ class TestIngestCompletedPrograms:
 
         await engine._ingest_completed_programs()
 
-        engine.storage.batch_transition_by_ids.assert_called_once_with(
+        engine.storage.batch_transition_by_ids.assert_called_once()
+        args, kwargs = engine.storage.batch_transition_by_ids.call_args
+        assert args == (
             [rej_prog.id],
             ProgramState.DONE.value,
             ProgramState.DISCARDED.value,
+        )
+        assert kwargs["metadata_by_id"][rej_prog.id]["discard_reason"] == (
+            "strategy_rejected"
         )
 
     async def test_empty_done_set_returns_early(self) -> None:
@@ -214,10 +236,15 @@ class TestIngestCompletedPrograms:
         await engine._ingest_completed_programs()
 
         # The failed program must be batch-transitioned to DISCARDED
-        engine.storage.batch_transition_by_ids.assert_called_once_with(
+        engine.storage.batch_transition_by_ids.assert_called_once()
+        args, kwargs = engine.storage.batch_transition_by_ids.call_args
+        assert args == (
             [prog.id],
             ProgramState.DONE.value,
             ProgramState.DISCARDED.value,
+        )
+        assert kwargs["metadata_by_id"][prog.id]["discard_reason"] == (
+            "ingestion_exception"
         )
 
     async def test_rejected_discard_batch_swallows_exceptions(self) -> None:
@@ -927,14 +954,13 @@ class TestStepPhaseOrdering:
         # Phase 3: await_idle
         # Phase 4: ingest
         # Phase 5: refresh
-        # Phase 6: await_idle (because refresh returned > 0)
+        # Phase 6: archive reindex (refresh is inline; no refresh DAG drain)
         assert call_log == [
             "await_idle",  # Phase 1
             "select_elites",  # Phase 2
             "await_idle",  # Phase 3
             "ingest",  # Phase 4
             "refresh",  # Phase 5
-            "await_idle",  # Phase 6
         ]
 
     async def test_step_skips_phase6_when_refresh_returns_zero(self) -> None:

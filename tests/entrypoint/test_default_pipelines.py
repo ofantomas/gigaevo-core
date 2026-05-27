@@ -228,6 +228,7 @@ class TestDefaultPipelineBuilder:
             "LineageStage",
             "LineagesToDescendants",
             "LineagesFromAncestors",
+            "AncestralTransitionPath",
             "MemoryContextStage",
             "MutationContextStage",
             "ComputeComplexityStage",
@@ -268,6 +269,7 @@ class TestDefaultPipelineBuilder:
         assert ("AncestorProgramIds", "LineagesFromAncestors") in edges
         assert ("LineagesToDescendants", "MutationContextStage") in edges
         assert ("LineagesFromAncestors", "MutationContextStage") in edges
+        assert ("AncestralTransitionPath", "MutationContextStage") in edges
 
     def test_execution_order_deps(self):
         ctx = _make_ctx()
@@ -282,6 +284,7 @@ class TestDefaultPipelineBuilder:
         assert "EnsureMetricsStage" in _dep_names(bp, "LineageStage")
         assert "LineageStage" in _dep_names(bp, "LineagesToDescendants")
         assert "LineageStage" in _dep_names(bp, "LineagesFromAncestors")
+        assert "LineageStage" in _dep_names(bp, "AncestralTransitionPath")
         assert "EnsureMetricsStage" in _dep_names(bp, "EvolutionaryStatisticsCollector")
 
     def test_custom_dag_timeout(self):
@@ -289,6 +292,15 @@ class TestDefaultPipelineBuilder:
         builder = DefaultPipelineBuilder(ctx, dag_timeout=1234.0)
         bp = builder.build_blueprint()
         assert bp.dag_timeout == 1234.0
+
+    def test_custom_stage_timeout_is_used_by_stage_factories(self, tmp_path):
+        (tmp_path / "validate.py").write_text("def validate(x): return {}\n")
+        ctx = _make_ctx(problem_dir=tmp_path)
+        builder = DefaultPipelineBuilder(ctx, stage_timeout=17.0)
+        bp = builder.build_blueprint()
+
+        assert bp.nodes["CallProgramFunction"]().timeout == 17.0
+        assert bp.nodes["CallValidatorFunction"]().timeout == 17.0
 
     def test_all_stages_are_callable_factories(self):
         """Verify all stage nodes are callable factories (not instantiated)."""

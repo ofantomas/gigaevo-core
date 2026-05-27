@@ -13,6 +13,7 @@ from gigaevo.evolution.strategies.migrant_selectors import MigrantSelector
 from gigaevo.evolution.strategies.models import BehaviorSpace, DynamicBehaviorSpace
 from gigaevo.evolution.strategies.removers import ArchiveRemover
 from gigaevo.evolution.strategies.selectors import ArchiveSelector
+from gigaevo.programs.lifecycle_metadata import mark_discarded
 from gigaevo.programs.program import Program
 from gigaevo.programs.program_state import ProgramState
 
@@ -79,6 +80,15 @@ class MapElitesIsland:
 
     async def add(self, program: Program) -> bool:
         """Insert `program` into its behavior cell if it improves the elite."""
+        if program.state != ProgramState.DONE:
+            logger.warning(
+                "Island {}: refusing to archive program {} with state={}",
+                self.config.island_id,
+                program.id,
+                program.state,
+            )
+            return False
+
         missing = set(self.config.behavior_space.behavior_keys) - program.metrics.keys()
         if missing:
             logger.debug(
@@ -214,12 +224,12 @@ class MapElitesIsland:
         return await self.archive_storage.get_all_elites()  # list[str]
 
     async def get_elites(self) -> list[Program]:
-        """Materialized elite programs (filters out missing)."""
+        """Materialized elite programs eligible for mutation."""
         ids = await self.get_elite_ids()
         if not ids:
             return []
         programs = await self.program_storage.mget(ids)
-        return [p for p in programs if p is not None]
+        return [p for p in programs if p is not None and p.state == ProgramState.DONE]
 
     async def __len__(self) -> int:
         """Number of elites in this island."""
@@ -276,6 +286,16 @@ class MapElitesIsland:
             if prog.metadata.get(METADATA_KEY_CURRENT_ISLAND):
                 prog.metadata[METADATA_KEY_CURRENT_ISLAND] = None
                 await self.state_manager.update_program(prog)
+            mark_discarded(
+                prog,
+                reason="archive_size_limit",
+                source="MapElitesIsland._enforce_size_limit",
+                details={
+                    "island_id": self.config.island_id,
+                    "max_size": self.config.max_size,
+                    "archive_remover": remover_type,
+                },
+            )
             await self.state_manager.set_program_state(prog, ProgramState.DISCARDED)
 
         await asyncio.gather(

@@ -317,9 +317,9 @@ class TestStateMachine:
         result = merge_states(ProgramState.DONE, ProgramState.DISCARDED)
         assert result == ProgramState.DISCARDED
 
-    def test_done_to_queued_is_valid_for_refresh(self) -> None:
-        """DONE → QUEUED is valid (used by refresh cycle)."""
-        assert is_valid_transition(ProgramState.DONE, ProgramState.QUEUED)
+    def test_done_to_queued_is_invalid_refresh_is_lifecycle_neutral(self) -> None:
+        """DONE → QUEUED is invalid; archive refresh no longer requeues elites."""
+        assert not is_valid_transition(ProgramState.DONE, ProgramState.QUEUED)
 
     def test_queued_to_done_is_invalid(self) -> None:
         """QUEUED → DONE is invalid (must go through RUNNING)."""
@@ -332,18 +332,14 @@ class TestStateMachine:
 
     def test_merge_incompatible_states_raises(self) -> None:
         """merge_states raises for truly incompatible states."""
-        # RUNNING and QUEUED: QUEUED→RUNNING is valid, so merge picks RUNNING.
-        # But DONE and RUNNING: RUNNING→DONE is valid, so merge picks DONE.
-        # Actually test the specific incompatible case:
-        # There's no incompatible case in the current state machine because
-        # transitions form a DAG with DISCARDED as universal absorber.
-        # All non-DISCARDED pairs have at least one valid direction.
-        # This test documents that the state machine is "complete" for merge.
         for s1 in ProgramState:
             for s2 in ProgramState:
-                # Should not raise — all pairs are mergeable
-                result = merge_states(s1, s2)
-                assert isinstance(result, ProgramState)
+                if {s1, s2} == {ProgramState.DONE, ProgramState.QUEUED}:
+                    with pytest.raises(ValueError):
+                        merge_states(s1, s2)
+                else:
+                    result = merge_states(s1, s2)
+                    assert isinstance(result, ProgramState)
 
 
 # ---------------------------------------------------------------------------
@@ -555,8 +551,8 @@ class TestDagRunnerBuildFailure:
         check = _make_storage(server)
         fresh = await check.get(prog.id)
         assert fresh is not None
-        assert fresh.state == ProgramState.DISCARDED, (
-            f"Build failure should DISCARD program, got {fresh.state}"
+        assert fresh.state == ProgramState.QUARANTINED, (
+            f"Build failure should QUARANTINE program, got {fresh.state}"
         )
         assert runner._metrics.dag_build_failures > 0
         await check.close()

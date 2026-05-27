@@ -42,6 +42,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     ),
     "FormatterStage": ("gigaevo.programs.stages.formatter", "FormatterStage"),
     "InsightsStage": ("gigaevo.programs.stages.insights", "InsightsStage"),
+    "AncestralTransitionPath": (
+        "gigaevo.programs.stages.insights_lineage",
+        "AncestralTransitionPath",
+    ),
     "LineagesFromAncestors": (
         "gigaevo.programs.stages.insights_lineage",
         "LineagesFromAncestors",

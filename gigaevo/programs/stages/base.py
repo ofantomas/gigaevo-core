@@ -150,6 +150,15 @@ class Stage:
         """Compute hash of current inputs for cache invalidation."""
         return self.compute_hash(self.params)
 
+    def compute_hash_for_inputs(self, inputs: Mapping[str, Any]) -> str | None:
+        """Compute cache hash from raw inputs using this stage instance.
+
+        Most stages have class-level cache semantics. Stages whose cache key
+        depends on constructor state (for example validator source code) can
+        override this instance hook.
+        """
+        return self.__class__.compute_hash_from_inputs(inputs)
+
     @classmethod
     def compute_hash(cls, params: StageIO) -> str | None:
         """Compute hash from validated params object.

@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import cast
+from typing import Any, cast
 
 from loguru import logger
 
@@ -35,6 +35,7 @@ from gigaevo.evolution.engine.core import (
 )
 from gigaevo.evolution.engine.mutation import generate_mutations
 from gigaevo.llm.bandit import MutationOutcome
+from gigaevo.programs.lifecycle_metadata import build_discard_metadata
 from gigaevo.programs.program import EXCLUDE_STAGE_RESULTS, Program
 from gigaevo.programs.program_state import ProgramState
 
@@ -420,6 +421,7 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
         rej_valid = 0
         rej_strategy = 0
         reject_ids: list[str] = []
+        reject_metadata_by_id: dict[str, dict[str, Any]] = {}
 
         for prog in completed:
             try:
@@ -431,6 +433,14 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
                     )
                     await self._notify_hook(prog, MutationOutcome.REJECTED_ACCEPTOR)
                     reject_ids.append(prog.id)
+                    reject_metadata_by_id[prog.id] = build_discard_metadata(
+                        reason="acceptor_rejected",
+                        source="SteadyStateEvolutionEngine._ingest_batch",
+                        details={
+                            "acceptor": type(self.config.program_acceptor).__name__,
+                            "metrics": dict(prog.metrics),
+                        },
+                    )
                     rej_valid += 1
                 elif await self.strategy.add(prog):
                     added += 1
@@ -443,6 +453,14 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
                 else:
                     await self._notify_hook(prog, MutationOutcome.REJECTED_STRATEGY)
                     reject_ids.append(prog.id)
+                    reject_metadata_by_id[prog.id] = build_discard_metadata(
+                        reason="strategy_rejected",
+                        source="SteadyStateEvolutionEngine._ingest_batch",
+                        details={
+                            "strategy": type(self.strategy).__name__,
+                            "metrics": dict(prog.metrics),
+                        },
+                    )
                     rej_strategy += 1
                     logger.debug(
                         "[SteadyState] Program {} rejected by strategy",
@@ -453,18 +471,29 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
                     "[SteadyState] Ingestion failed for {}: {}", prog.short_id, e
                 )
                 reject_ids.append(prog.id)
+                reject_metadata_by_id[prog.id] = build_discard_metadata(
+                    reason="ingestion_exception",
+                    source="SteadyStateEvolutionEngine._ingest_batch",
+                    details={
+                        "error_type": type(e).__name__,
+                        "error": str(e)[:500],
+                    },
+                )
 
         # Batch DONE -> DISCARDED for rejects
         if reject_ids:
             reject_set = set(reject_ids)
             for prog in completed:
                 if prog.id in reject_set:
+                    if updates := reject_metadata_by_id.get(prog.id):
+                        prog.metadata.update(updates)
                     prog.state = ProgramState.DISCARDED
             try:
                 await self.storage.batch_transition_by_ids(
                     reject_ids,
                     ProgramState.DONE.value,
                     ProgramState.DISCARDED.value,
+                    metadata_by_id=reject_metadata_by_id,
                 )
             except Exception as e:
                 logger.error(
@@ -563,13 +592,12 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
             self.storage.snapshot.bump()
             self.storage.snapshot.bump(incremental=True)
 
-            # 6. Refresh archive (DONE -> QUEUED for lineage/insights stages)
+            # 6. Refresh archive context without lifecycle transitions.
             refreshed = await self._refresh_archive_programs()
 
-            # 7. Reopen mutation gate BEFORE waiting for refresh DAGs.
-            #    First few mutations may see slightly stale population stats
-            #    in their mutation context (from previous epoch's collector).
-            #    This is acceptable: stats change slowly between epochs.
+            # 7. Reopen mutation gate after inline context refresh.
+            #    Refresh no longer enqueues lifecycle DAGs, so there is no
+            #    post-refresh drain/idle wait here.
             self._draining = False
             # Carry forward programs ingested during drain (by _poll_and_ingest
             # inside _drain_scoped).  Without this, those programs "don't count"
@@ -586,9 +614,8 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
             )
             self._mutation_gate.set()
 
-            # 8. Wait for refresh DAGs + reindex (mutations continue)
+            # 8. Reindex after inline refresh (mutations continue)
             if refreshed:
-                await self._await_idle()
                 await self.strategy.reindex_archive()
 
             # 9. Increment epoch counter

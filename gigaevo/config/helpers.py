@@ -161,11 +161,24 @@ def build_dag_from_builder(builder: Any) -> Any:
 def select_pipeline_builder(
     problem_context: ProblemContext,
     evolution_context: EvolutionContext,
+    stage_timeout: float = 2400.0,
+    dag_timeout: float = 3600.0,
+    include_ancestral_transition_path: bool = True,
 ) -> ContextPipelineBuilder | DefaultPipelineBuilder:
     """Select appropriate pipeline builder based on problem type."""
     if problem_context.is_contextual:
-        return ContextPipelineBuilder(evolution_context)
-    return DefaultPipelineBuilder(evolution_context)
+        return ContextPipelineBuilder(
+            evolution_context,
+            stage_timeout=stage_timeout,
+            dag_timeout=dag_timeout,
+            include_ancestral_transition_path=include_ancestral_transition_path,
+        )
+    return DefaultPipelineBuilder(
+        evolution_context,
+        stage_timeout=stage_timeout,
+        dag_timeout=dag_timeout,
+        include_ancestral_transition_path=include_ancestral_transition_path,
+    )
 
 
 def add_auxiliary_metrics(

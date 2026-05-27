@@ -57,5 +57,7 @@ class InsightsStage(LangGraphStage):
             **kwargs,
         )
 
-    async def compute(self, program: Program) -> InsightsOutput:
-        return InsightsOutput(insights=await self.agent.arun(program))
+    async def partial_output_on_exhausted(
+        self, program: Program, exc: BaseException
+    ) -> InsightsOutput:
+        return InsightsOutput(insights=ProgramInsights(insights=[]))

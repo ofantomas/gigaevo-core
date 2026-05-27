@@ -7,3 +7,4 @@ optimization_time_budget: null   # null = 0.75 * dag_timeout (auto-computed at r
 dag_concurrency: 16
 max_code_length: 120000
 max_insights: 8
+include_ancestral_transition_path: true

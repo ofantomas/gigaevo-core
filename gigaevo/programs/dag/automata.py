@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any, Literal
 
 import networkx as nx
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
 from gigaevo.programs.core_types import FINAL_STATES, StageIO
@@ -578,13 +579,29 @@ class DAGAutomata(BaseModel):
             if res and res.status in FINAL_STATES:
                 inputs_hash = None
                 try:
-                    st_cls = self.topology.get_stage_class(stage_name)
-                    inputs_hash = st_cls.compute_hash_from_inputs(named_inputs)
+                    inputs_hash = st.compute_hash_for_inputs(named_inputs)
                 except Exception:
                     inputs_hash = None
 
                 if not cache_handler.should_rerun(res, inputs_hash, finished_this_run):
                     is_cached = True
+
+                if stage_name == "CallValidatorFunction":
+                    logger.info(
+                        "[DAGCache] {} program={} semantic_hash={} stored_hash={} hit={}",
+                        stage_name,
+                        program.short_id,
+                        inputs_hash,
+                        res.input_hash if res else None,
+                        is_cached,
+                    )
+            elif stage_name == "CallValidatorFunction":
+                logger.info(
+                    "[DAGCache] {} program={} semantic_hash={} stored_hash=None hit=False",
+                    stage_name,
+                    program.short_id,
+                    None,
+                )
 
             if is_cached:
                 newly_cached.add(stage_name)
