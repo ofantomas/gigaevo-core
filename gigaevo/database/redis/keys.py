@@ -52,3 +52,7 @@ class RedisProgramKeys:
     def run_state(self) -> str:
         """Hash key for persisting run-level counters (e.g., generation, migration)."""
         return f"{self.config.key_prefix}:run_state"
+
+    def payload_program_map(self) -> str:
+        """Hash key mapping stable program payload hashes to program IDs."""
+        return f"{self.config.key_prefix}:payload_to_program"

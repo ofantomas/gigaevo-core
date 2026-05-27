@@ -141,6 +141,21 @@ class ProgramStorage(ABC):
         """
         await self.update(program)
 
+    async def update_program_metadata(
+        self, program_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Patch top-level program metadata fields without changing lifecycle.
+
+        The default implementation fetches and updates the full program.
+        Redis storage overrides this with a small JSON patch so lease heartbeats
+        do not rewrite large stage-result blobs.
+        """
+        program = await self.get(program_id)
+        if program is None:
+            return
+        program.metadata.update(updates)
+        await self.update(program)
+
     @abstractmethod
     async def get(self, program_id: str) -> Program | None: ...
 
@@ -294,6 +309,8 @@ class ProgramStorage(ABC):
         program_ids: list[str],
         old_state: str,
         new_state: str,
+        *,
+        metadata_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> int:
         """Batch-transition programs by ID.
 
@@ -306,6 +323,10 @@ class ProgramStorage(ABC):
         matching = [p for p in programs if p.state.value == old_state]
         if not matching:
             return 0
+        if metadata_by_id:
+            for program in matching:
+                if updates := metadata_by_id.get(program.id):
+                    program.metadata.update(updates)
         return await self.batch_transition_state(matching, old_state, new_state)
 
     async def remove_ids_from_status_set(self, status: str, ids: list[str]) -> None:

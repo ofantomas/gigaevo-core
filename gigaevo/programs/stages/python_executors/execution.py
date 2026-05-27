@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -15,7 +17,12 @@ from gigaevo.programs.core_types import (
 )
 from gigaevo.programs.program import Program
 from gigaevo.programs.stages.base import Stage
-from gigaevo.programs.stages.common import AnyContainer, Box
+from gigaevo.programs.stages.common import (
+    AnyContainer,
+    Box,
+    ProgramPayload,
+    ProgramPayloadContainer,
+)
 from gigaevo.programs.stages.python_executors.wrapper import (
     ExecRunnerError,
     run_exec_runner,
@@ -24,6 +31,27 @@ from gigaevo.programs.stages.stage_registry import StageRegistry
 from gigaevo.programs.utils import dedent_code
 
 T = TypeVar("T")
+
+
+def _stable_json_hash(value: Any) -> str:
+    try:
+        payload = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        )
+    except Exception:
+        payload = repr(value)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _short_hash_parts(*parts: str) -> str:
+    h = hashlib.sha256()
+    for part in parts:
+        h.update(part.encode("utf-8"))
+        h.update(b"\0")
+    return h.hexdigest()[:16]
 
 
 class PythonCodeExecutor[T](Stage):
@@ -75,6 +103,9 @@ class PythonCodeExecutor[T](Stage):
         """Parse raw subprocess return value; override in subclasses."""
         return cast(T, x)
 
+    def _wrap_output(self, value: T, program: Program) -> Box[Any]:
+        return self.__class__.OutputModel(data=value)
+
     async def compute(self, program: Program) -> ProgramStageResult | Box[Any]:
         stage_name = self.__class__.__name__
         code_str = self._code_str(program)
@@ -116,7 +147,7 @@ class PythonCodeExecutor[T](Stage):
             del stdout_bytes
             del stderr_text
 
-            return self.__class__.OutputModel(data=value_parsed)
+            return self._wrap_output(value_parsed, program)
 
         except ExecRunnerError as e:
             # Detect memory limit errors
@@ -171,7 +202,7 @@ class CallProgramFunction(PythonCodeExecutor):
     """Calls the user function in Program.code. Accepts optional input from DAG wiring."""
 
     InputsModel = ContextInputModel
-    OutputModel = Box[Any]
+    OutputModel = ProgramPayload[Any]
 
     def _build_call(self, program: Program) -> tuple[Sequence[Any], dict[str, Any]]:
         params = cast(ContextInputModel, self.params)
@@ -180,6 +211,31 @@ class CallProgramFunction(PythonCodeExecutor):
         if context is not None:
             args.append(context.data)
         return args, {}
+
+    def _wrap_output(self, value: Any, program: Program) -> ProgramPayload[Any]:
+        params = cast(ContextInputModel, self.params)
+        context_hash = (
+            _stable_json_hash(params.context.data) if params.context is not None else ""
+        )
+        payload_hash = _short_hash_parts(
+            "program-payload-v1",
+            hashlib.sha256(program.code.encode("utf-8")).hexdigest(),
+            self.function_name,
+            ":".join(str(p) for p in self.python_path),
+            context_hash,
+        )
+        provenance = {
+            "program_id": program.id,
+            "function_name": self.function_name,
+            "code_hash": hashlib.sha256(program.code.encode("utf-8")).hexdigest(),
+            "context_hash": context_hash,
+        }
+        program.set_metadata("program_payload_hash", payload_hash)
+        return ProgramPayload[Any](
+            data=value,
+            payload_hash=payload_hash,
+            provenance=provenance,
+        )
 
 
 @StageRegistry.register(
@@ -235,7 +291,7 @@ class CallFileFunction(PythonCodeExecutor):
 
 
 class ValidatorInput(StageIO):
-    payload: AnyContainer
+    payload: ProgramPayloadContainer | AnyContainer
     context: AnyContainer | None
 
 
@@ -262,6 +318,10 @@ class CallValidatorFunction(PythonCodeExecutor):
             self._validator_code = p.read_text(encoding="utf-8")
         except OSError as e:
             raise ValidationError(f"Failed to read validator file: {e}") from e
+        self._validator_code_hash = hashlib.sha256(
+            self._validator_code.encode("utf-8")
+        ).hexdigest()
+        self._validator_path = str(p.resolve())
 
     def _code_str(self, program: Program) -> str:
         return self._validator_code
@@ -287,7 +347,51 @@ class CallValidatorFunction(PythonCodeExecutor):
             context = params.context.data
         else:
             context = None
+        provenance = {
+            "payload_hash": self._payload_hash(params.payload),
+            "validator_hash": self._validator_code_hash,
+            "validator_path": self._validator_path,
+            "function_name": self.function_name,
+            "context_hash": (
+                _stable_json_hash(params.context.data)
+                if params.context is not None
+                else ""
+            ),
+        }
+        program.set_metadata("validation_provenance", provenance)
         return ([context, payload] if context is not None else [payload]), {}
+
+    @staticmethod
+    def _payload_hash(payload: AnyContainer) -> str:
+        explicit = getattr(payload, "payload_hash", None)
+        if isinstance(explicit, str) and explicit:
+            return explicit
+        return _stable_json_hash(getattr(payload, "data", None))[:16]
+
+    def _semantic_input_hash(self, params: ValidatorInput) -> str:
+        return _short_hash_parts(
+            "CallValidatorFunction-v2",
+            self._payload_hash(params.payload),
+            self._validator_code_hash,
+            self.function_name,
+            self._validator_path,
+            (
+                _stable_json_hash(params.context.data)
+                if params.context is not None
+                else ""
+            ),
+        )
+
+    def compute_inputs_hash(self) -> str | None:
+        return self._semantic_input_hash(cast(ValidatorInput, self.params))
+
+    def compute_hash_for_inputs(self, inputs: dict[str, Any]) -> str | None:
+        try:
+            normalized = self.__class__._normalize_inputs(inputs)
+            params = self.__class__.InputsModel.model_validate(normalized)
+            return self._semantic_input_hash(cast(ValidatorInput, params))
+        except Exception:
+            return None
 
 
 class ValidationResult(StageIO):

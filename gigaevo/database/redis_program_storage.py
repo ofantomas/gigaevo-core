@@ -112,6 +112,26 @@ class RedisProgramStorage(ProgramStorage):
             logger.warning("[RedisProgramStorage] Corrupt data in {}: {}", ctx, e)
             return None
 
+    @staticmethod
+    def _payload_hash_for_program(program: Program) -> str | None:
+        metadata = program.metadata if isinstance(program.metadata, dict) else {}
+        payload_hash = metadata.get("program_payload_hash")
+        if isinstance(payload_hash, str) and payload_hash:
+            return payload_hash
+        provenance = metadata.get("validation_provenance")
+        if isinstance(provenance, dict):
+            payload_hash = provenance.get("payload_hash")
+            if isinstance(payload_hash, str) and payload_hash:
+                return payload_hash
+        return None
+
+    def _record_payload_mapping(
+        self, pipe: aioredis.client.Pipeline, program: Program
+    ) -> None:
+        payload_hash = self._payload_hash_for_program(program)
+        if payload_hash:
+            pipe.hset(self._keys.payload_program_map(), payload_hash, program.id)
+
     async def _mget_by_keys(
         self,
         r: aioredis.Redis,
@@ -154,6 +174,7 @@ class RedisProgramStorage(ProgramStorage):
 
             pipe = r.pipeline(transaction=False)
             pipe.set(key, _dumps(data))
+            self._record_payload_mapping(pipe, program)
 
             # Clean up old status set if different
             if old_status and old_status != new_status:
@@ -199,6 +220,7 @@ class RedisProgramStorage(ProgramStorage):
                         data["atomic_counter"] = int(counter)
                         pipe.multi()
                         pipe.set(key, _dumps(data))
+                        self._record_payload_mapping(pipe, merged)
                         await pipe.execute()
                         break
                 except WatchError:
@@ -223,9 +245,44 @@ class RedisProgramStorage(ProgramStorage):
             counter = await r.incr(self._keys.timestamp())
             data = program.to_dict()
             data["atomic_counter"] = int(counter)
-            await r.set(key, _dumps(data))
+            pipe = r.pipeline(transaction=False)
+            pipe.set(key, _dumps(data))
+            self._record_payload_mapping(pipe, program)
+            await pipe.execute()
 
         await self._conn.execute("write_exclusive", _write)
+
+    async def update_program_metadata(
+        self, program_id: str, updates: dict[str, Any]
+    ) -> None:
+        """Patch top-level metadata without rewriting large program payloads."""
+        if not updates:
+            return
+        self._check_write_allowed("update_program_metadata")
+
+        async def _patch(r: aioredis.Redis) -> None:
+            key = self._keys.program(program_id)
+            raw = await r.get(key)
+            if not raw:
+                return
+            parsed = _loads(raw)
+            metadata = parsed.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata.update(updates)
+            parsed["metadata"] = metadata
+            parsed["atomic_counter"] = int(await r.incr(self._keys.timestamp()))
+            pipe = r.pipeline(transaction=False)
+            pipe.set(key, _dumps(parsed))
+            payload_hash = metadata.get("program_payload_hash")
+            provenance = metadata.get("validation_provenance")
+            if not payload_hash and isinstance(provenance, dict):
+                payload_hash = provenance.get("payload_hash")
+            if isinstance(payload_hash, str) and payload_hash:
+                pipe.hset(self._keys.payload_program_map(), payload_hash, program_id)
+            await pipe.execute()
+
+        await self._conn.execute("update_program_metadata", _patch)
 
     async def remove(self, program_id: str) -> None:
         """Remove a program and clean up its status set entry."""
@@ -503,6 +560,7 @@ class RedisProgramStorage(ProgramStorage):
 
             pipe = r.pipeline(transaction=False)
             pipe.set(key, _dumps(data))
+            self._record_payload_mapping(pipe, program)
             if old_state != new_state:
                 pipe.srem(self._keys.status_set(old_state), program.id)
             pipe.sadd(self._keys.status_set(new_state), program.id)
@@ -560,6 +618,7 @@ class RedisProgramStorage(ProgramStorage):
                     data["atomic_counter"] = int(start_counter + i)
 
                     pipe.set(self._keys.program(prog.id), _dumps(data))
+                    self._record_payload_mapping(pipe, prog)
                     chunk_ids.append(prog.id)
 
                 # Bulk SREM/SADD: one command per chunk instead of per program
@@ -583,6 +642,8 @@ class RedisProgramStorage(ProgramStorage):
         program_ids: list[str],
         old_state: str,
         new_state: str,
+        *,
+        metadata_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> int:
         """Batch-transition programs by ID using raw JSON patching.
 
@@ -629,6 +690,15 @@ class RedisProgramStorage(ProgramStorage):
                 pipe = r.pipeline(transaction=False)
                 patch_ids = []
                 for i, (key, pid, parsed) in enumerate(to_patch):
+                    if metadata_by_id and (updates := metadata_by_id.get(pid)):
+                        metadata = parsed.get("metadata")
+                        if not isinstance(metadata, dict):
+                            program = Program.from_dict(parsed)
+                            program.metadata.update(updates)
+                            parsed = program.to_dict()
+                        else:
+                            metadata.update(updates)
+                            parsed["metadata"] = metadata
                     parsed["state"] = new_state
                     parsed["atomic_counter"] = int(start_counter + i)
                     pipe.set(key, _dumps(parsed))
