@@ -104,76 +104,119 @@ Evolution starts immediately. Logs are saved to `outputs/`.
 
 ### 5. Launch a managed experiment (`gigaevo launch`)
 
-`python run.py` is the low-level launcher. For tracked, multi-step runs use the
-**experiment-manifest** workflow exposed by the `gigaevo` CLI (registered by
+`python run.py` is the low-level launcher. For tracked runs use the
+**experiment-manifest** workflow of the `gigaevo` CLI (registered by
 `pip install -e .`): it adds preflight validation, Redis-DB claiming, `nohup`
-exec, and a watchdog.
+exec, and a watchdog. A worked, end-to-end example manifest ships at
+[`experiments/sella/full_sella_baseline_evolution/experiment.yaml`](experiments/sella/full_sella_baseline_evolution/experiment.yaml).
 
-**Preliminary setup (per machine):**
+**A. Per-machine setup (coordinator).**
 
 ```bash
 pip install -e .                              # registers the `gigaevo` CLI + entry points
 gigaevo --help                                # NB: global flags (-e/-r/...) go BEFORE the subcommand
-redis-server                                  # program storage + (optionally shared) validation queue
-echo "OPENAI_API_KEY=sk-or-v1-..." > .env     # OpenRouter key (or your provider)
+redis-server                                  # one Redis serves program storage AND the validation queue
+echo "OPENAI_API_KEY=sk-or-v1-..." > .env     # OpenRouter key (LANGFUSE_* keys here auto-enable tracing)
+export GIGAEVO_PYTHON=$(which python)          # REQUIRED: launch.sh + the GIGAEVO_PYTHON gate use this;
+                                               # the built-in default is a stale path and will fail.
 ```
 
-**Distributed validation workers** — only for problems whose `validate()` farms
-work to a Redis-backed pool (e.g. the Sella molecular-optimizer). On each worker
-host (coordinator Redis reached via an SSH-config alias), run a babysat pool;
-`JAX_ENABLE_X64=1` is required for xTB:
+**B. Problem + seeds.** A problem dir holds `metrics.yaml`, `task_description.txt`,
+`initial_programs/`, and a `validate(optimizer, …)` entry. You can point at an
+external checkout with `problem.dir=…`, **but the preflight seed-check always
+looks at `problems/<problem_name>/initial_programs/`** — so symlink it:
 
 ```bash
-JAX_ENABLE_X64=1 scripts/babysit_validate.sh <coordinator-alias> 6379 6380 48 \
-    xtb 1.0 false logs_validate "$(which python)" 1 300 540 32
+ln -sfn /abs/path/to/problem_checkout problems/<problem_name>
 ```
 
-**Author the manifest** at `experiments/<task>/<name>/experiment.yaml`
-(`schema_version: 2`; contract = identity + problem + config + runs[] + servers[]
-+ baseline):
+> **`validate()` must return a pure-numeric metrics dict** (`dict[str, float]`).
+> The validator stage rejects strings/bools (e.g. an `invalid_reason` string) —
+> keep diagnostics out of the returned dict.
+
+**C. Distributed validation workers** — only for problems whose `validate()`
+farms work to a Redis-backed pool (e.g. the Sella optimizer). The pool's queue
+is the coordinator Redis **db0** (the `RemoteOptimizationClient` default), so the
+GigaEvo run must store programs in a **different** DB (see `runs[].db` below).
+On each worker host run a babysat pool (`JAX_ENABLE_X64=1` is required for xTB);
+for the Sella problem use the helper in the problem repo:
+
+```bash
+# opt_problem/scripts/deploy_validate_workers.sh [branch] [coordinator] [num_workers]
+scripts/deploy_validate_workers.sh full-sella-baseline-evolution a002dc-0002 48
+# (equivalently, the raw pool — coordinator Redis reached via an SSH-config alias:)
+JAX_ENABLE_X64=1 scripts/babysit_validate.sh <coordinator-alias> 6379 6380 48 \
+    xtb 1.0 true logs_validate "$(which python)" 1 10 1200 64
+```
+
+**D. Author the manifest** at `experiments/<task>/<name>/experiment.yaml`
+(`schema_version: 2`). Key fields the preflight gates care about:
 
 ```yaml
 schema_version: 2
 contract:
-  identity: { name: sella/full_sella_baseline_evolution, task: sella,
-              branch: full-sella-baseline-evolution }
-  problem:  { name: full_sella_baseline_evolution, has_test_set: true,
-              fitness_type: continuous, metric_name: fitness,
-              test_set_path: /abs/path/molecules/test_XTB.json }
+  identity: { name: sella/full_sella_baseline_evolution, task: sella, branch: full-sella-baseline-evolution }
+  problem:
+    name: full_sella_baseline_evolution
+    has_test_set: true
+    fitness_type: continuous
+    metric_name: fitness
+    test_set_path: /abs/path/molecules/test_XTB.json
+    test_set_sha256: <sha256sum of the test set>   # required when has_test_set: true
   config:
     problem_name: full_sella_baseline_evolution
-    pipeline: intra_extra_memory          # new "standard": intra+extra memory, live refresh hook
+    pipeline: intra_extra_memory          # "new standard": intra+extra memory + live refresh hook
     llm_model: google/gemini-3.5-flash
-    max_generations: null                 # open-ended; otherwise → max_mutants override
     shared_overrides:
       mutation_mode: diff                 # SEARCH/REPLACE diff mutation
       num_parents: 1
       algorithm: single_island            # 1D island, fitness as the axis
       max_concurrent_dags: 5
-      problem.dir: /abs/path/to/problem/checkout
+      max_code_length: 200000             # raise above the 30000 default for large seeds
+      problem.dir: /abs/path/to/problem_checkout
   runs:
-    - { label: A1, db: 0, prefix: fsbe, pipeline: intra_extra_memory,
-        problem_name: full_sella_baseline_evolution, condition: diff_baseline,
-        model_name: google/gemini-3.5-flash }
+    - label: A1
+      db: 1                               # program storage — MUST differ from the xTB queue (db0)
+      prefix: fsbe
+      pipeline: intra_extra_memory
+      problem_name: full_sella_baseline_evolution
+      condition: diff_baseline
+      model_name: google/gemini-3.5-flash
+      mutation_url: https://openrouter.ai/api/v1   # else the generator emits llm_base_url=None
   servers: [ https://openrouter.ai/api/v1 ]
+  max_generations: 1000000                # drives `max_mutants`; large == effectively open-ended
   baseline: { reference: sella, metric: mean_rel_steps }
-lifecycle: { status: preregistered }
+lifecycle:
+  status: implemented                     # set after a green smoke test (see E)
+  smoke_test: { completed: true, db: 1, generations: 3 }
+  treatment_verification: { completed: true }   # single-condition run -> N/A, but the gate needs true
+control_plane:
+  notifications:
+    telegram: { enabled: false }          # enable only where api.telegram.org is reachable + creds set
+    pr: { enabled: false }
 ```
 
-**Preflight → smoke test → launch.** `gigaevo launch` enforces CRITICAL gates
-(status `implemented`, `GIGAEVO_PYTHON`, LLM endpoint + model-id reachable,
-empty/claimable Redis DBs, seed programs, test-set SHA, smoke test completed):
+**E. Smoke test → implemented → launch.** `gigaevo launch` enforces CRITICAL
+gates: status `implemented`, `GIGAEVO_PYTHON` set/executable, LLM endpoint +
+model-id reachable (`/v1/models`), **Redis run-DB empty + claimable**, seed
+programs exist, test-set SHA matches, smoke test completed, treatment
+verification completed, resolved config matches pins. A quick smoke run first:
 
 ```bash
 EXP=sella/full_sella_baseline_evolution
 
-gigaevo -e "$EXP" launch --dry-run       # preflight + DB claim, no exec (writes LAUNCH_PREVIEW.md)
-gigaevo -e "$EXP" manifest update lifecycle.smoke_test.completed true   # after a green smoke run
-gigaevo -e "$EXP" manifest update lifecycle.status implemented
+# Smoke: a few mutants on a scratch DB; confirms seed scores + diff mutation + workers.
+python run.py problem.name=full_sella_baseline_evolution problem.dir=/abs/checkout \
+  pipeline=intra_extra_memory mutation_mode=diff algorithm=single_island num_parents=1 \
+  model_name=google/gemini-3.5-flash llm_base_url=https://openrouter.ai/api/v1 \
+  max_code_length=200000 redis.db=1 max_mutants=3
+
+gigaevo -e "$EXP" launch --dry-run       # preflight only (claims the run DB); fix any CRITICALs
 gigaevo -e "$EXP" launch                 # preflight → claim DB → nohup exec → spawn watchdog
 ```
 
-Monitor with `gigaevo -e "$EXP" status` / `top` / `trajectory` / `logs`.
+Monitor: `gigaevo -e "$EXP" status` / `top` / `trajectory` / `logs` (+ Langfuse UI).
+Stop the open-ended run by killing the recorded run + watchdog PIDs.
 
 ## How It Works
 
