@@ -102,6 +102,79 @@ python run.py problem.name=heilbron
 
 Evolution starts immediately. Logs are saved to `outputs/`.
 
+### 5. Launch a managed experiment (`gigaevo launch`)
+
+`python run.py` is the low-level launcher. For tracked, multi-step runs use the
+**experiment-manifest** workflow exposed by the `gigaevo` CLI (registered by
+`pip install -e .`): it adds preflight validation, Redis-DB claiming, `nohup`
+exec, and a watchdog.
+
+**Preliminary setup (per machine):**
+
+```bash
+pip install -e .                              # registers the `gigaevo` CLI + entry points
+gigaevo --help                                # NB: global flags (-e/-r/...) go BEFORE the subcommand
+redis-server                                  # program storage + (optionally shared) validation queue
+echo "OPENAI_API_KEY=sk-or-v1-..." > .env     # OpenRouter key (or your provider)
+```
+
+**Distributed validation workers** — only for problems whose `validate()` farms
+work to a Redis-backed pool (e.g. the Sella molecular-optimizer). On each worker
+host (coordinator Redis reached via an SSH-config alias), run a babysat pool;
+`JAX_ENABLE_X64=1` is required for xTB:
+
+```bash
+JAX_ENABLE_X64=1 scripts/babysit_validate.sh <coordinator-alias> 6379 6380 48 \
+    xtb 1.0 false logs_validate "$(which python)" 1 300 540 32
+```
+
+**Author the manifest** at `experiments/<task>/<name>/experiment.yaml`
+(`schema_version: 2`; contract = identity + problem + config + runs[] + servers[]
++ baseline):
+
+```yaml
+schema_version: 2
+contract:
+  identity: { name: sella/full_sella_baseline_evolution, task: sella,
+              branch: full-sella-baseline-evolution }
+  problem:  { name: full_sella_baseline_evolution, has_test_set: true,
+              fitness_type: continuous, metric_name: fitness,
+              test_set_path: /abs/path/molecules/test_XTB.json }
+  config:
+    problem_name: full_sella_baseline_evolution
+    pipeline: intra_extra_memory          # new "standard": intra+extra memory, live refresh hook
+    llm_model: google/gemini-3.5-flash
+    max_generations: null                 # open-ended; otherwise → max_mutants override
+    shared_overrides:
+      mutation_mode: diff                 # SEARCH/REPLACE diff mutation
+      num_parents: 1
+      algorithm: single_island            # 1D island, fitness as the axis
+      max_concurrent_dags: 5
+      problem.dir: /abs/path/to/problem/checkout
+  runs:
+    - { label: A1, db: 0, prefix: fsbe, pipeline: intra_extra_memory,
+        problem_name: full_sella_baseline_evolution, condition: diff_baseline,
+        model_name: google/gemini-3.5-flash }
+  servers: [ https://openrouter.ai/api/v1 ]
+  baseline: { reference: sella, metric: mean_rel_steps }
+lifecycle: { status: preregistered }
+```
+
+**Preflight → smoke test → launch.** `gigaevo launch` enforces CRITICAL gates
+(status `implemented`, `GIGAEVO_PYTHON`, LLM endpoint + model-id reachable,
+empty/claimable Redis DBs, seed programs, test-set SHA, smoke test completed):
+
+```bash
+EXP=sella/full_sella_baseline_evolution
+
+gigaevo -e "$EXP" launch --dry-run       # preflight + DB claim, no exec (writes LAUNCH_PREVIEW.md)
+gigaevo -e "$EXP" manifest update lifecycle.smoke_test.completed true   # after a green smoke run
+gigaevo -e "$EXP" manifest update lifecycle.status implemented
+gigaevo -e "$EXP" launch                 # preflight → claim DB → nohup exec → spawn watchdog
+```
+
+Monitor with `gigaevo -e "$EXP" status` / `top` / `trajectory` / `logs`.
+
 ## How It Works
 
 1. **Load initial programs** from `problems/<name>/initial_programs/`
