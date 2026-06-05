@@ -1,0 +1,104 @@
+EVOLUTIONARY MUTATION (DIFF MODE): Adaptive Code Evolution
+
+Transform Parent 1 using program insights, lineage intelligence, and any supplied memory cards. Emit the transformation as one or more SEARCH/REPLACE blocks against Parent 1, not as full source.
+
+## INTELLIGENCE INPUTS
+
+**PROGRAM INSIGHTS**: category [tag] (severity): concrete evidence
+- beneficial: preserve or extend the pattern.
+- harmful: remove or avoid the pattern.
+- fragile: improve or robustify the pattern.
+- rigid: make the pattern more adaptable.
+- neutral: usually ignore unless it supports another change.
+
+**LINEAGE INSIGHTS**: Historical mutation outcomes and their measured effects.
+- Use positive lineage evidence to refine or generalize working mechanisms.
+- Use negative lineage evidence as counterexamples; avoid repeating the mechanism unguarded.
+- Treat ancestry as evidence about Parent 1's lineage, not as additional parents.
+
+**MEMORY / INSPIRATION CARDS**: External cards may describe successful or unsuccessful mechanisms from other programs.
+- Treat each card as evidence about an adaptation pattern, not as an additional parent.
+- Use improving cards as inspiration for mechanisms that may transfer to Parent 1.
+- Use regressing cards as counterexamples or as evidence for needed safeguards.
+- Prefer transferable mechanisms over donor-specific constants, names, or structure.
+- If a card does not fit Parent 1's structure, ignore it.
+- If a memory or inspiration card influenced your mutation, list its ID in `inspirations_used` when an ID is available.
+
+**EVOLUTIONARY STATISTICS**: Population-level context can guide exploration/exploitation balance.
+
+## EVOLUTIONARY ARCHETYPE SELECTION
+
+Choose one archetype based on evidence strength and risk tolerance:
+
+1. Precision Optimization
+2. Proven Pattern Extension
+3. Harmful Pattern Removal
+4. Computational Reinvention
+5. Solution Space Exploration
+6. Approach Synthesis
+7. Guided Innovation
+8. Conservative Exploration
+
+Use exploitation archetypes for strong positive evidence, exploration archetypes for weak/negative evidence or rigid/harmful patterns, and hybrid archetypes for mixed evidence.
+
+## SEARCH/REPLACE FORMAT (STRICT)
+
+Emit your change as one or more SEARCH/REPLACE blocks in the `code` field. The blocks are applied in order to Parent 1's source via literal string replacement.
+
+Each block has exactly this shape:
+
+<<<<<<< SEARCH
+<verbatim block from Parent 1, copied byte-for-byte including indentation>
+=======
+<the replacement block, or empty to delete the SEARCH block>
+>>>>>>> REPLACE
+
+Rules enforced by the runtime:
+
+- Verbatim SEARCH: the text between `<<<<<<< SEARCH` and `=======` must appear EXACTLY ONCE in Parent 1's current source. Copy whitespace, indentation, blank lines, and trailing characters byte-for-byte.
+- Uniqueness: if the snippet appears in several places, expand SEARCH upward/downward with surrounding lines until the match is unique.
+- Markers literal: `<<<<<<< SEARCH`, `=======`, and `>>>>>>> REPLACE` must each appear on their own line.
+- Multiple edits: emit multiple consecutive blocks. They are applied in order; each operates on the result of the previous one.
+- Replace whole logical units when possible, such as a full function, branch, or block.
+- No outer wrapping: the `code` field starts directly with `<<<<<<< SEARCH`. Do not wrap blocks in markdown fences.
+- No full source: do not emit the entire mutated program.
+- The patched program must be valid Python.
+- Diff mode has exactly one parent. All SEARCH blocks must target Parent 1 only.
+
+Tiny example. Parent 1 contains:
+
+def score(x):
+    return x ** 2
+
+def main():
+    print(score(3))
+
+Acceptable `code` field to change the exponent to 3:
+
+<<<<<<< SEARCH
+def score(x):
+    return x ** 2
+=======
+def score(x):
+    return x ** 3
+>>>>>>> REPLACE
+
+## OUTPUT RULES
+
+Return only the structured output object requested by the system schema. Do not write Markdown labels, fenced JSON, or standalone SEARCH/REPLACE blocks outside the `code` field.
+
+- `archetype`: one of the 8 archetypes above.
+- `justification`: 2-3 sentences citing the evidence used and expected mechanism.
+- `insights_used`: 1-3 insight strings copied verbatim from the input when available.
+- `inspirations_used`: memory/inspiration card IDs that influenced the mutation, or an empty list.
+- `changes`: one or more dictionaries with:
+  - `description`: a reusable/generalizable description, with concrete details only when relevant.
+  - `explanation`: why the change was introduced and why it may transfer.
+- `code`: one or more SEARCH/REPLACE blocks against Parent 1.
+
+CRITICAL:
+- Do not put JSON, templates, full Python source, unified-diff `@@`/`---` markers, or commentary in the `code` field.
+- SEARCH blocks must match Parent 1 exactly once.
+- Memory card examples are donor evidence, not target patches. Do not copy donor diffs unless the same text exists exactly once in Parent 1.
+
+{parent_blocks}

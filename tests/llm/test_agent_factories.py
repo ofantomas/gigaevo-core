@@ -89,6 +89,7 @@ class TestCreateMutationAgent:
             mutation_mode="diff",
         )
         assert agent.mutation_mode == "diff"
+        assert "SEARCH/REPLACE" in agent.user_prompt_template
 
     def test_user_prompt_template_set(self):
         agent = create_mutation_agent(
@@ -113,6 +114,23 @@ class TestCreateMutationAgent:
             prompts_dir=tmp_path,
         )
         assert "CUSTOM" in agent.system_prompt
+
+    def test_diff_mode_uses_diff_prompt_files(self, tmp_path: Path):
+        custom_dir = tmp_path / "mutation"
+        custom_dir.mkdir()
+        (custom_dir / "system_diff.txt").write_text(
+            "Diff system: {task_description}\n{metrics_description}"
+        )
+        (custom_dir / "user_diff.txt").write_text("Diff user {parent_blocks}")
+        agent = create_mutation_agent(
+            llm=_mock_llm(),
+            task_description="CUSTOM_DIFF",
+            metrics_context=_make_ctx(),
+            mutation_mode="diff",
+            prompts_dir=tmp_path,
+        )
+        assert "CUSTOM_DIFF" in agent.system_prompt
+        assert agent.user_prompt_template == "Diff user {parent_blocks}"
 
 
 # ---------------------------------------------------------------------------

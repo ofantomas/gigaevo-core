@@ -103,6 +103,23 @@ class TestSelectorMemoryProvider:
         assert mock_selector.select.call_args.kwargs["mutation_mode"] == "rewrite"
 
     @pytest.mark.asyncio
+    async def test_passes_explicit_mutation_mode(self) -> None:
+        mock_selector = AsyncMock()
+        mock_selector.select.return_value = MemorySelection(cards=[], card_ids=[])
+
+        provider = SelectorMemoryProvider(max_cards=1)
+        provider._selector = mock_selector
+
+        await provider.select_cards(
+            program=_make_program(),
+            task_description="t",
+            metrics_description="m",
+            mutation_mode="diff",
+        )
+
+        assert mock_selector.select.call_args.kwargs["mutation_mode"] == "diff"
+
+    @pytest.mark.asyncio
     async def test_init_creates_selector_lazily(self) -> None:
         """SelectorMemoryProvider defers MemorySelectorAgent creation to first use."""
         with patch("gigaevo.memory.provider.MemorySelectorAgent") as mock_cls:

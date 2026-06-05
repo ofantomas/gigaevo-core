@@ -56,6 +56,10 @@ class TestDagRunnerMetrics:
         assert m.dag_errors == 0
         assert m.dag_timeouts == 0
         assert m.orphaned_programs_discarded == 0
+        assert m.orphaned_programs_preserved == 0
+        assert m.orphaned_programs_completed == 0
+        assert m.orphaned_programs_requeued == 0
+        assert m.orphaned_programs_quarantined == 0
         assert m.dag_build_failures == 0
         assert m.state_update_failures == 0
 
@@ -205,6 +209,7 @@ def _make_mock_storage():
     storage.batch_transition_by_ids = AsyncMock(
         side_effect=lambda ids, *a, **kw: len(ids)
     )
+    storage.requeue_running_program = AsyncMock(return_value=True)
     return storage
 
 
@@ -327,8 +332,8 @@ class TestDagRunnerLaunch:
         except asyncio.CancelledError:
             pass
 
-    async def test_orphaned_running_discarded(self):
-        """RUNNING program not in _active gets DISCARDED."""
+    async def test_orphaned_running_requeued(self):
+        """RUNNING program not in _active is retried, not discarded."""
         prog = _make_test_program(state=ProgramState.RUNNING)
         storage = _make_mock_storage()
         storage.get_ids_by_status = AsyncMock(
@@ -339,12 +344,76 @@ class TestDagRunnerLaunch:
         runner = _make_runner(storage=storage)
         await runner._launch()
 
+        assert runner._metrics.orphaned_programs_requeued == 1
+        assert runner._metrics.orphaned_programs_discarded == 0
+        assert runner._metrics.dag_errors == 0
+        storage.requeue_running_program.assert_awaited_once_with(prog)
+
+    async def test_orphaned_done_preserved(self):
+        """DONE blob leaked in RUNNING set is preserved and status-cleaned."""
+        prog = _make_test_program(state=ProgramState.DONE)
+        storage = _make_mock_storage()
+        storage.get_ids_by_status = AsyncMock(
+            side_effect=lambda s: [prog.id] if s == ProgramState.RUNNING.value else []
+        )
+        storage.mget = AsyncMock(return_value=[prog])
+
+        runner = _make_runner(storage=storage)
+        await runner._launch()
+
+        assert runner._metrics.orphaned_programs_preserved == 1
+        assert runner._metrics.orphaned_programs_discarded == 0
+        storage.transition_status.assert_awaited_once_with(
+            prog.id, ProgramState.RUNNING.value, ProgramState.DONE.value
+        )
+        storage.requeue_running_program.assert_not_awaited()
+
+    async def test_orphaned_running_with_terminal_evidence_finalized_done(self):
+        """RUNNING orphan with completed terminal stages is finalized as DONE."""
+        from gigaevo.programs.core_types import ProgramStageResult
+
+        prog = _make_test_program(state=ProgramState.RUNNING)
+        prog.stage_results["EnsureMetricsStage"] = ProgramStageResult.success()
+        storage = _make_mock_storage()
+        storage.get_ids_by_status = AsyncMock(
+            side_effect=lambda s: [prog.id] if s == ProgramState.RUNNING.value else []
+        )
+        storage.mget = AsyncMock(return_value=[prog])
+
+        runner = _make_runner(storage=storage)
+        await runner._launch()
+
+        assert runner._metrics.orphaned_programs_completed == 1
+        assert runner._metrics.orphaned_programs_discarded == 0
+        storage.fast_state_transition.assert_called()
+        call_args = storage.fast_state_transition.call_args
+        assert call_args[0][2] == ProgramState.DONE.value
+        storage.requeue_running_program.assert_not_awaited()
+
+    async def test_orphaned_running_quarantined_after_retry_budget(self):
+        """Retry-exhausted non-terminal orphans are explicitly quarantined."""
+        prog = _make_test_program(state=ProgramState.RUNNING)
+        prog.metadata["dag_runner_orphan_retries"] = 1
+        storage = _make_mock_storage()
+        storage.get_ids_by_status = AsyncMock(
+            side_effect=lambda s: [prog.id] if s == ProgramState.RUNNING.value else []
+        )
+        storage.mget = AsyncMock(return_value=[prog])
+
+        runner = _make_runner(
+            storage=storage,
+            config=DagRunnerConfig(orphan_retry_budget=1),
+        )
+        await runner._launch()
+
+        assert runner._metrics.orphaned_programs_quarantined == 1
         assert runner._metrics.orphaned_programs_discarded == 1
-        assert runner._metrics.dag_errors == 1
-        # fast_state_transition should have been called to discard with DISCARDED state
         storage.fast_state_transition.assert_called()
         call_args = storage.fast_state_transition.call_args
         assert call_args[0][2] == ProgramState.DISCARDED.value
+        assert prog.metadata["dag_runner_quarantine"]["reason"] == (
+            "orphan_retry_budget_exhausted"
+        )
 
     async def test_mark_running_failure_cancels_task_and_removes_from_active(self):
         """If batch_transition_by_ids raises after task creation, tasks are cancelled."""

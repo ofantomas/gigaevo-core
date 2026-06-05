@@ -22,6 +22,7 @@ pipeline_builder:
   max_parallel: ${dag_concurrency}
   max_insights: ${max_insights}
   max_code_length: ${max_code_length}
+  mutation_mode: ${mutation_mode}
 
 dag_blueprint:
   _target_: gigaevo.config.helpers.build_dag_from_builder

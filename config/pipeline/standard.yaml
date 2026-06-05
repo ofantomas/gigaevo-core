@@ -48,3 +48,6 @@ pipeline_builder:
 dag_blueprint:
   _target_: gigaevo.config.helpers.build_dag_from_builder
   builder: ${pipeline_builder}
+
+engine_config:
+  refresh_mode: context_only

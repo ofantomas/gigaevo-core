@@ -49,6 +49,9 @@ dag_blueprint:
   _target_: gigaevo.config.helpers.build_dag_from_builder
   builder: ${pipeline_builder}
 
+engine_config:
+  refresh_mode: context_only
+
 # Live external-memory refresh — wraps the same IdeaTracker instance so the
 # mid-run hook and the post-run hook serialise via that tracker's _run_lock.
 # refresh_every counts ingestor sweeps that landed >=1 program. K=10 ≈ one

@@ -653,6 +653,73 @@ class TestCallValidatorFunction:
             assert metrics["payload"] == 3.0
             assert artifact is None
 
+    def test_compute_hash_normalizes_equivalent_callables(self) -> None:
+        """Equivalent callable payloads should not miss cache by object identity."""
+        from gigaevo.programs.stages.common import Box
+        from gigaevo.programs.stages.python_executors.execution import (
+            CallValidatorFunction,
+            ValidatorInput,
+        )
+
+        def make_candidate(scale: int):
+            def candidate(x):
+                return x * scale
+
+            return candidate
+
+        first = ValidatorInput(payload=Box(data=make_candidate(2)), context=None)
+        second = ValidatorInput(payload=Box(data=make_candidate(2)), context=None)
+
+        assert CallValidatorFunction.compute_hash(first) == (
+            CallValidatorFunction.compute_hash(second)
+        )
+
+    def test_compute_hash_includes_cache_on(self) -> None:
+        """cache_on changes invalidate the validator cache without affecting calls."""
+        from gigaevo.programs.stages.common import Box
+        from gigaevo.programs.stages.python_executors.execution import (
+            CallValidatorFunction,
+            ValidatorInput,
+        )
+
+        base = ValidatorInput(
+            payload=Box(data=42),
+            context=Box(data={"opponents": ["old"]}),
+            cache_on=Box(data=["opp-a"]),
+        )
+        changed = ValidatorInput(
+            payload=Box(data=42),
+            context=Box(data={"opponents": ["old"]}),
+            cache_on=Box(data=["opp-b"]),
+        )
+
+        assert CallValidatorFunction.compute_hash(base) != (
+            CallValidatorFunction.compute_hash(changed)
+        )
+
+    def test_build_call_ignores_cache_on(self, tmp_path) -> None:
+        """cache_on is a cache-key input only and is not passed to validate()."""
+        from gigaevo.programs.program import Program
+        from gigaevo.programs.stages.common import Box
+        from gigaevo.programs.stages.python_executors.execution import (
+            CallValidatorFunction,
+        )
+
+        validator_file = tmp_path / "validator_cache_on.py"
+        validator_file.write_text("def validate(payload): return {'score': 1.0}\n")
+        stage = CallValidatorFunction(path=validator_file, timeout=10)
+        stage.attach_inputs(
+            {
+                "payload": Box(data="payload"),
+                "context": None,
+                "cache_on": Box(data=["opp-a", "opp-b"]),
+            }
+        )
+
+        args, kwargs = stage._build_call(Program(code="def f(): pass"))
+        assert args == ["payload"]
+        assert kwargs == {}
+
 
 def test_call_validator_output_is_raw_alias():
     """Task 2: CallValidatorFunction emits RawValidatorOutput (pre-aggregator)."""

@@ -22,13 +22,18 @@ from gigaevo.evolution.engine.config import SteadyStateEngineConfig
 from gigaevo.evolution.engine.core import EvolutionEngine
 from gigaevo.evolution.engine.dispatcher import dispatcher_loop
 from gigaevo.evolution.engine.ingestor import ingestor_loop, poll_and_ingest
-from gigaevo.evolution.engine.refresh import ParentRefresher, ParentRefreshTicket
+from gigaevo.evolution.engine.refresh import (
+    ContextOnlyParentRefresher,
+    ParentRefresher,
+    ParentRefreshTicket,
+)
+from gigaevo.runner.dag_blueprint import DAGBlueprint
 
 
 class SteadyStateEvolutionEngine(EvolutionEngine):
     """Steady-state engine. Composes dispatcher + ingestor + ParentRefresher."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, dag_blueprint: DAGBlueprint | None = None, **kwargs):
         super().__init__(**kwargs)
         cfg = cast(SteadyStateEngineConfig, self.config)
         if not isinstance(cfg, SteadyStateEngineConfig):
@@ -60,7 +65,18 @@ class SteadyStateEvolutionEngine(EvolutionEngine):
         # to break down producer occupancy into LLM vs DAG phases.
         self._llm_active: int = 0
 
-        self._parent_refresher = ParentRefresher(storage=self.storage)
+        if self._ss_config.refresh_mode == "context_only":
+            if dag_blueprint is None:
+                raise ValueError(
+                    "refresh_mode='context_only' requires dag_blueprint on "
+                    "SteadyStateEvolutionEngine"
+                )
+            self._parent_refresher = ContextOnlyParentRefresher(
+                storage=self.storage,
+                dag_blueprint=dag_blueprint,
+            )
+        else:
+            self._parent_refresher = ParentRefresher(storage=self.storage)
 
         self._dispatcher_task: asyncio.Task | None = None
         self._ingestor_task: asyncio.Task | None = None

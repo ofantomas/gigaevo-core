@@ -84,12 +84,19 @@ def create_mutation_agent(
         else FixedDirPromptFetcher(prompts_dir)
     )
 
+    if mutation_mode == "diff":
+        system_prompt_type = "system_diff"
+        user_prompt_type = "user_diff"
+    else:
+        system_prompt_type = "system"
+        user_prompt_type = "user"
+
     # Load initial system prompt template via the fetcher
-    initial_fetch = fetcher.fetch("mutation", "system")
+    initial_fetch = fetcher.fetch("mutation", system_prompt_type)
     system_template = initial_fetch.text
 
     # Load user template via fetcher (co-evolved if champion has user prompt, else from files)
-    user_fetch = fetcher.fetch("mutation", "user")
+    user_fetch = fetcher.fetch("mutation", user_prompt_type)
     user_template = user_fetch.text
 
     # Create metrics formatter

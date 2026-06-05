@@ -28,3 +28,4 @@ evolution_engine:
   pre_step_hook: ${pre_step_hook}
   post_run_hook: ${ideas_tracker}
   post_step_hook: ${post_step_hook}
+  dag_blueprint: ${dag_blueprint}

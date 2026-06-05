@@ -25,6 +25,7 @@ class MemoryProvider(ABC):
         *,
         task_description: str,
         metrics_description: str,
+        mutation_mode: str = "rewrite",
     ) -> MemorySelection:
         """Select memory cards relevant to this program."""
 
@@ -38,6 +39,7 @@ class NullMemoryProvider(MemoryProvider):
         *,
         task_description: str,
         metrics_description: str,
+        mutation_mode: str = "rewrite",
     ) -> MemorySelection:
         return MemorySelection(cards=[], card_ids=[])
 
@@ -86,11 +88,12 @@ class SelectorMemoryProvider(MemoryProvider):
         *,
         task_description: str,
         metrics_description: str,
+        mutation_mode: str = "rewrite",
     ) -> MemorySelection:
         selector = self._get_selector()
         return await selector.select(
             input=[program],
-            mutation_mode="rewrite",
+            mutation_mode=mutation_mode,
             task_description=task_description,
             metrics_description=metrics_description,
             memory_text="",

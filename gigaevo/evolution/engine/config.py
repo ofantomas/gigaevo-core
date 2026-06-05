@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 import warnings
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -106,6 +106,16 @@ class EngineConfig(BaseModel):
             "restore the legacy behaviour, where the parent refresh lock "
             "is held across the entire child-DAG and only one child of a "
             "given parent can be in flight at a time."
+        ),
+    )
+    refresh_mode: Literal["stateful", "context_only"] = Field(
+        default="stateful",
+        description=(
+            "Parent refresh strategy. 'stateful' preserves the existing "
+            "DONE->QUEUED->DONE DAG refresh and is the default for adversarial "
+            "or unknown pipelines. 'context_only' refreshes prompt/context "
+            "metadata in-process while preserving DONE lifecycle state; use "
+            "only for standard non-adversarial context refresh."
         ),
     )
     post_step_hook_timeout_s: float = Field(

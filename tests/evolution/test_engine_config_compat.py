@@ -126,4 +126,19 @@ def test_coalesce_refresh_rejects_non_bool() -> None:
         EngineConfig(coalesce_refresh="not-a-bool")
 
 
+def test_refresh_mode_defaults_to_stateful() -> None:
+    cfg = EngineConfig()
+    assert cfg.refresh_mode == "stateful"
+
+
+def test_refresh_mode_accepts_context_only() -> None:
+    cfg = EngineConfig(refresh_mode="context_only")
+    assert cfg.refresh_mode == "context_only"
+
+
+def test_refresh_mode_rejects_unknown_value() -> None:
+    with pytest.raises(ValidationError):
+        EngineConfig(refresh_mode="full_dag")
+
+
 __all__: list[str] = []

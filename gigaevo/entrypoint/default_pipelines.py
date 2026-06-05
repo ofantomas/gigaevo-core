@@ -161,12 +161,14 @@ class DefaultPipelineBuilder(PipelineBuilder):
         max_insights: int = DEFAULT_MAX_INSIGHTS,
         max_code_length: int = MAX_CODE_LENGTH,
         archive_gate_enabled: bool = False,
+        mutation_mode: str = "rewrite",
     ):
         super().__init__(ctx, dag_timeout=dag_timeout, max_parallel=max_parallel)
         self._stage_timeout = stage_timeout
         self._max_insights = max_insights
         self._max_code_length = max_code_length
         self._archive_gate_enabled = archive_gate_enabled
+        self._mutation_mode = mutation_mode
         self._optimization_time_budget: float | None = None
         self._contribute_default_nodes()
         self._contribute_default_edges()
@@ -437,6 +439,7 @@ class DefaultPipelineBuilder(PipelineBuilder):
                 memory_provider=memory_provider,
                 task_description=task_description,
                 metrics_description=metrics_description,
+                mutation_mode=self._mutation_mode,
                 timeout=stage_timeout,
             ),
         )

@@ -228,6 +228,9 @@ class AdversarialPipelineBuilder(DefaultPipelineBuilder):
         self.add_data_flow_edge(
             "FetchOpponentResultsStage", "CallValidatorFunction", "context"
         )
+        self.add_data_flow_edge(
+            "FetchOpponentIdsStage", "CallValidatorFunction", "cache_on"
+        )
 
         # FetchOpponentIdsStage runs after ValidateCodeStage (parallel with CallProgramFunction)
         self.add_exec_dep(

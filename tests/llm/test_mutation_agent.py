@@ -142,16 +142,58 @@ class TestApplyDiffAndExtract:
     def setup_method(self):
         self.agent = _make_agent()
 
-    def test_valid_diff(self):
-        """A correct unified diff is applied to original code."""
-        original = "line1\nline2\nline3\n"
-        diff = (
-            "--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineX\n line3\n"
+    def test_parse_search_replace_blocks(self):
+        """SEARCH/REPLACE blocks are parsed into exact pairs."""
+        payload = (
+            "<<<<<<< SEARCH\n"
+            "    x = 1\n"
+            "=======\n"
+            "    x = 2\n"
+            ">>>>>>> REPLACE\n"
+            "\n"
+            "<<<<<<< SEARCH\n"
+            "    return x\n"
+            "=======\n"
+            "    return x + 1\n"
+            ">>>>>>> REPLACE\n"
         )
-        fenced = f"```diff\n{diff}```"
-        result = self.agent._apply_diff_and_extract(original, fenced)
-        assert "lineX" in result
-        assert "line2" not in result
+        blocks = self.agent._parse_search_replace_blocks(payload)
+        assert blocks == [
+            ("    x = 1", "    x = 2"),
+            ("    return x", "    return x + 1"),
+        ]
+
+    def test_valid_search_replace(self):
+        """A SEARCH/REPLACE block is applied to original Python code."""
+        original = "def solve():\n    x = 1\n    y = 2\n    return x + y\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    y = 2\n"
+            "=======\n"
+            "    y = 3\n"
+            ">>>>>>> REPLACE\n"
+        )
+        result = self.agent._apply_diff_and_extract(original, patch)
+        assert "    y = 3" in result
+        assert "    y = 2" not in result
+
+    def test_multiple_search_replace_blocks_apply_in_order(self):
+        """Multiple SEARCH/REPLACE blocks are applied sequentially."""
+        original = "def solve():\n    x = 1\n    y = 2\n    return x + y\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    x = 1\n"
+            "=======\n"
+            "    x = 10\n"
+            ">>>>>>> REPLACE\n"
+            "<<<<<<< SEARCH\n"
+            "    return x + y\n"
+            "=======\n"
+            "    return x - y\n"
+            ">>>>>>> REPLACE\n"
+        )
+        result = self.agent._apply_diff_and_extract(original, patch)
+        assert result == "def solve():\n    x = 10\n    y = 2\n    return x - y\n"
 
     def test_empty_diff_raises(self):
         """An empty diff raises ValueError."""
@@ -160,11 +202,126 @@ class TestApplyDiffAndExtract:
             self.agent._apply_diff_and_extract(original, "```\n   \n```")
 
     def test_invalid_diff_raises(self):
-        """A malformed diff raises ValueError about patch failure."""
+        """A malformed diff raises ValueError about missing SEARCH/REPLACE blocks."""
         original = "line1\nline2\n"
         bad_diff = "```diff\nthis is not a diff\n```"
-        with pytest.raises(ValueError, match="Failed to apply patch"):
+        with pytest.raises(ValueError, match="No SEARCH/REPLACE blocks"):
             self.agent._apply_diff_and_extract(original, bad_diff)
+
+    def test_missing_search_text_raises(self):
+        """A SEARCH block must appear in the parent code."""
+        original = "def solve():\n    return 1\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    return 2\n"
+            "=======\n"
+            "    return 3\n"
+            ">>>>>>> REPLACE\n"
+        )
+        with pytest.raises(ValueError, match="SEARCH text not found"):
+            self.agent._apply_diff_and_extract(original, patch)
+
+    def test_non_unique_search_text_raises(self):
+        """A SEARCH block must identify exactly one location."""
+        original = "def solve():\n    x = 1\n    x = 1\n    return x\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    x = 1\n"
+            "=======\n"
+            "    x = 2\n"
+            ">>>>>>> REPLACE\n"
+        )
+        with pytest.raises(ValueError, match="matches 2 locations"):
+            self.agent._apply_diff_and_extract(original, patch)
+
+    def test_empty_search_text_raises(self):
+        """A SEARCH block cannot be empty."""
+        original = "def solve():\n    return 1\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "\n"
+            "=======\n"
+            "    return 2\n"
+            ">>>>>>> REPLACE\n"
+        )
+        with pytest.raises(ValueError, match="empty SEARCH text"):
+            self.agent._apply_diff_and_extract(original, patch)
+
+    def test_invalid_patched_python_raises(self):
+        """The final patched program must still parse as Python."""
+        original = "def solve():\n    return 1\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    return 1\n"
+            "=======\n"
+            "    return (\n"
+            ">>>>>>> REPLACE\n"
+        )
+        with pytest.raises(ValueError, match="not valid Python"):
+            self.agent._apply_diff_and_extract(original, patch)
+
+    def test_json_escaped_search_replace_payload(self):
+        """JSON-escaped diff payloads are unescaped before block parsing."""
+        original = "def solve():\n    return 1\n"
+        patch = (
+            "<<<<<<< SEARCH\\n"
+            "    return 1\\n"
+            "=======\\n"
+            "    return 2\\n"
+            ">>>>>>> REPLACE\\n"
+        )
+        fixed = self.agent._fix_json_escaped_code(patch, mode="diff")
+        result = self.agent._apply_diff_and_extract(original, fixed)
+        assert result == "def solve():\n    return 2\n"
+
+    def test_single_deletion_block(self):
+        """An empty REPLACE deletes the matched SEARCH text."""
+        original = "def solve():\n    debug = 1\n    return 2\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    debug = 1\n"
+            "=======\n"
+            ">>>>>>> REPLACE\n"
+        )
+        result = self.agent._apply_diff_and_extract(original, patch)
+        assert "debug" not in result
+        assert result == "def solve():\n\n    return 2\n"
+
+    def test_deletion_then_edit_blocks(self):
+        """A deletion block followed by an edit block both apply (no mis-merge)."""
+        original = "def solve():\n    debug = 1\n    x = 2\n    return x\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    debug = 1\n"
+            "=======\n"
+            ">>>>>>> REPLACE\n"
+            "<<<<<<< SEARCH\n"
+            "    x = 2\n"
+            "=======\n"
+            "    x = 20\n"
+            ">>>>>>> REPLACE\n"
+        )
+        result = self.agent._apply_diff_and_extract(original, patch)
+        assert "debug" not in result
+        assert result == "def solve():\n\n    x = 20\n    return x\n"
+
+    def test_edit_then_trailing_deletion_blocks(self):
+        """An edit followed by a trailing deletion both apply (no silent drop)."""
+        original = "def solve():\n    keep = 1\n    remove = 2\n    return keep\n"
+        patch = (
+            "<<<<<<< SEARCH\n"
+            "    keep = 1\n"
+            "=======\n"
+            "    keep = 10\n"
+            ">>>>>>> REPLACE\n"
+            "<<<<<<< SEARCH\n"
+            "    remove = 2\n"
+            "=======\n"
+            ">>>>>>> REPLACE\n"
+        )
+        result = self.agent._apply_diff_and_extract(original, patch)
+        assert "remove" not in result
+        assert result == "def solve():\n    keep = 10\n\n    return keep\n"
 
 
 # ---------------------------------------------------------------------------
@@ -264,11 +421,15 @@ class TestParseResponse:
         assert result["parsed_output"]["insights_used"] == ["insight_a"]
 
     def test_diff_mode(self):
-        """In diff mode, the code field is treated as a diff applied to parent."""
+        """In diff mode, the code field is SEARCH/REPLACE against the parent."""
         agent = _make_agent(mutation_mode="diff")
-        original = "line1\nline2\nline3\n"
+        original = "def solve():\n    value = 2\n    return value\n"
         diff_str = (
-            "--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineX\n line3\n"
+            "<<<<<<< SEARCH\n"
+            "    value = 2\n"
+            "=======\n"
+            "    value = 3\n"
+            ">>>>>>> REPLACE\n"
         )
         parent = _make_program(code=original)
         output = _make_structured_output(code=diff_str)
@@ -280,8 +441,8 @@ class TestParseResponse:
 
         result = agent.parse_response(state)
 
-        assert "lineX" in result["parsed_output"]["code"]
-        assert "line2" not in result["parsed_output"]["code"]
+        assert "value = 3" in result["parsed_output"]["code"]
+        assert "value = 2" not in result["parsed_output"]["code"]
 
     def test_no_output(self):
         """When structured_output is None, parsed_output has empty code + error."""
@@ -523,6 +684,7 @@ class TestMutationStructuredOutput:
             "archetype",
             "justification",
             "insights_used",
+            "inspirations_used",
             "changes",
             "code",
         }

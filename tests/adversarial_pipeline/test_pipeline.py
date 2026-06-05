@@ -150,6 +150,20 @@ class TestAdversarialPipelineBuilder:
         assert len(context_edges) == 1
         assert context_edges[0].input_name == "context"
 
+    def test_opponent_ids_feed_validator_cache_key(self):
+        ctx = _make_ctx()
+        bp = AdversarialPipelineBuilder(
+            ctx, opponent_provider=FakeProvider()
+        ).build_blueprint()
+        cache_edges = [
+            e
+            for e in bp.data_flow_edges
+            if e.source_stage == "FetchOpponentIdsStage"
+            and e.destination_stage == "CallValidatorFunction"
+        ]
+        assert len(cache_edges) == 1
+        assert cache_edges[0].input_name == "cache_on"
+
     def test_fetch_opponent_ids_depends_on_validate_code(self):
         ctx = _make_ctx()
         bp = AdversarialPipelineBuilder(

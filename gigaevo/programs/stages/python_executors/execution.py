@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Generic, TypeVar, cast
 
+import cloudpickle
 from loguru import logger
 
 from gigaevo.exceptions import ValidationError
@@ -238,6 +241,7 @@ class CallFileFunction(PythonCodeExecutor):
 class ValidatorInput(StageIO):
     payload: AnyContainer
     context: AnyContainer | None
+    cache_on: AnyContainer | None = None
 
 
 ValidatorOutput = Box[tuple[dict[str, float], Any]]
@@ -286,6 +290,35 @@ class CallValidatorFunction(PythonCodeExecutor):
             )
         return (x, None)
 
+    @classmethod
+    def compute_hash(cls, params: StageIO) -> str | None:
+        """Compute a stable cache key for validator inputs.
+
+        Validator payloads may contain callables returned by
+        ``CallProgramFunction``. Hashing those by cloudpickle directly is too
+        sensitive to callable object identity and can make unchanged validator
+        inputs miss cache repeatedly. We normalize callables by module,
+        qualname, code shape, defaults, and closure contents where available.
+
+        ``cache_on`` is intentionally included even though compute ignores it;
+        adversarial pipelines wire opponent IDs there so changing opponent
+        samples invalidates validation without passing extra runtime args to
+        evaluate()/validate().
+        """
+        p = cast(ValidatorInput, params)
+        normalized = {
+            "payload": _stable_cache_value(p.payload),
+            "context": _stable_cache_value(p.context),
+            "cache_on": _stable_cache_value(p.cache_on),
+        }
+        encoded = json.dumps(
+            normalized,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()[:16]
+
     def _build_call(self, program: Program) -> tuple[Sequence[Any], dict[str, Any]]:
         params = cast(ValidatorInput, self.params)
         payload = params.payload.data
@@ -294,6 +327,112 @@ class CallValidatorFunction(PythonCodeExecutor):
         else:
             context = None
         return ([context, payload] if context is not None else [payload]), {}
+
+
+def _stable_cache_value(value: Any) -> Any:
+    """Return a JSON-serializable representation suitable for cache keys."""
+    seen: set[int] = set()
+    return _stable_cache_value_inner(value, seen)
+
+
+def _stable_cache_value_inner(value: Any, seen: set[int]) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    obj_id = id(value)
+    if obj_id in seen:
+        return {"__cycle__": type(value).__qualname__}
+    seen.add(obj_id)
+    try:
+        if isinstance(value, StageIO):
+            return {
+                "__stage_io__": type(value).__qualname__,
+                "data": _stable_cache_value_inner(value.model_dump(), seen),
+            }
+        if isinstance(value, Mapping):
+            return {
+                str(k): _stable_cache_value_inner(v, seen)
+                for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+            }
+        if isinstance(value, (list, tuple)):
+            return [_stable_cache_value_inner(v, seen) for v in value]
+        if isinstance(value, (set, frozenset)):
+            items = [_stable_cache_value_inner(v, seen) for v in value]
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+        if isinstance(value, bytes):
+            return {
+                "__bytes_sha256__": hashlib.sha256(value).hexdigest(),
+                "len": len(value),
+            }
+        if callable(value):
+            return _stable_callable_cache_value(value, seen)
+        if hasattr(value, "model_dump"):
+            return {
+                "__model__": type(value).__qualname__,
+                "data": _stable_cache_value_inner(value.model_dump(), seen),
+            }
+        if hasattr(value, "tolist"):
+            try:
+                return {
+                    "__array_like__": type(value).__qualname__,
+                    "shape": list(getattr(value, "shape", ())),
+                    "dtype": str(getattr(value, "dtype", "")),
+                    "data": _stable_cache_value_inner(value.tolist(), seen),
+                }
+            except Exception:
+                pass
+        try:
+            payload = cloudpickle.dumps(value)
+            return {
+                "__pickle_sha256__": hashlib.sha256(payload).hexdigest(),
+                "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            }
+        except Exception:
+            return {
+                "__repr__": repr(value),
+                "type": f"{type(value).__module__}.{type(value).__qualname__}",
+            }
+    finally:
+        seen.discard(obj_id)
+
+
+def _stable_callable_cache_value(fn: Any, seen: set[int]) -> dict[str, Any]:
+    code = getattr(fn, "__code__", None)
+    if code is not None:
+        code_payload = {
+            "co_code": code.co_code.hex(),
+            "co_consts": repr(code.co_consts),
+            "co_names": code.co_names,
+            "co_varnames": code.co_varnames,
+            "co_argcount": code.co_argcount,
+            "co_kwonlyargcount": code.co_kwonlyargcount,
+        }
+        code_hash = hashlib.sha256(
+            json.dumps(code_payload, sort_keys=True, default=repr).encode("utf-8")
+        ).hexdigest()[:16]
+    else:
+        code_hash = None
+
+    closure_values: list[Any] = []
+    for cell in getattr(fn, "__closure__", None) or ():
+        try:
+            closure_values.append(
+                _stable_cache_value_inner(cell.cell_contents, seen)
+            )
+        except ValueError:
+            closure_values.append({"__empty_cell__": True})
+
+    return {
+        "__callable__": True,
+        "module": getattr(fn, "__module__", None),
+        "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", None)),
+        "code_hash": code_hash,
+        "defaults": _stable_cache_value_inner(getattr(fn, "__defaults__", None), seen),
+        "kwdefaults": _stable_cache_value_inner(
+            getattr(fn, "__kwdefaults__", None), seen
+        ),
+        "closure": closure_values,
+    }
 
 
 # ---------------------------------------------------------------------------

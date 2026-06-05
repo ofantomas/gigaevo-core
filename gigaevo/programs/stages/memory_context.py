@@ -43,18 +43,21 @@ class MemoryContextStage(Stage):
         memory_provider: MemoryProvider,
         task_description: str,
         metrics_description: str,
+        mutation_mode: str = "rewrite",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._provider = memory_provider
         self._task_description = task_description
         self._metrics_description = metrics_description
+        self._mutation_mode = mutation_mode
 
     async def compute(self, program: Program) -> StageIO:
         selection = await self._provider.select_cards(
             program,
             task_description=self._task_description,
             metrics_description=self._metrics_description,
+            mutation_mode=self._mutation_mode,
         )
 
         if selection.cards:

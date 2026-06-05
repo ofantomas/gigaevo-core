@@ -125,6 +125,7 @@ class IntraMemoryPipelineBuilder(DefaultPipelineBuilder):
             max_insights=max_insights,
             max_code_length=max_code_length,
             archive_gate_enabled=archive_gate_enabled,
+            mutation_mode=mutation_mode or "rewrite",
         )
         self._enable_optuna_stage = enable_optuna_stage
         self._optimization_time_budget_arg = optimization_time_budget
@@ -368,6 +369,7 @@ class IntraExtraMemoryPipelineBuilder(IntraMemoryPipelineBuilder):
                 memory_provider=memory_provider,
                 task_description=task_description,
                 metrics_description=metrics_description,
+                mutation_mode=mutation_mode or "rewrite",
                 timeout=stage_timeout,
             ),
         )

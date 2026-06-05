@@ -29,15 +29,21 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 import time
+from typing import Any
 import weakref
 
 from loguru import logger
 
 from gigaevo.database.program_storage import ProgramStorage
+from gigaevo.evolution.mutation.constants import MUTATION_CONTEXT_METADATA_KEY
+from gigaevo.programs.core_types import ProgramStageResult, StageState
 from gigaevo.programs.program import EXCLUDE_STAGE_RESULTS, Program
 from gigaevo.programs.program_state import ProgramState
+from gigaevo.programs.stages.common import FloatDictContainer
+from gigaevo.runner.dag_blueprint import DAGBlueprint
 
 _REFRESH_POLL_S = 0.25
+CONTEXT_REFRESH_METADATA_KEY = "context_refresh"
 
 
 @dataclass
@@ -416,8 +422,185 @@ class ParentRefresher:
             await asyncio.sleep(self._poll_interval)
 
 
+class ContextOnlyParentRefresher(ParentRefresher):
+    """Parent refresher that updates mutation context without lifecycle flips.
+
+    This refresher keeps the same locking/freshness semantics as
+    :class:`ParentRefresher` by subclassing it, but overrides the actual
+    refresh work. Instead of DONE→QUEUED→DONE, it executes only known
+    metadata/context stages from the current DAG blueprint and persists the
+    refreshed program while leaving ``program.state == DONE``.
+
+    It is intentionally narrow: evaluation/opponent-dependent stages are not
+    run here. Adversarial pipelines should keep ``refresh_mode='stateful'``
+    until lifecycle-neutral parity is proven for opponent sampling, validator
+    results, DG tracker writes, wins, source/gradient injection, and shared
+    benchmark lineage.
+    """
+
+    def __init__(
+        self,
+        *,
+        storage: ProgramStorage,
+        dag_blueprint: DAGBlueprint,
+        selector: ParentRefreshSelector | None = None,
+        poll_interval: float = _REFRESH_POLL_S,
+        timeout_seconds: float | None = 600.0,
+    ) -> None:
+        super().__init__(
+            storage=storage,
+            selector=selector,
+            poll_interval=poll_interval,
+            timeout_seconds=timeout_seconds,
+        )
+        self._dag_blueprint = dag_blueprint
+
+    async def _do_refresh(self, targets: list[Program]) -> list[Program]:
+        refreshed: list[Program] = []
+        for target in targets:
+            latest = await self._storage.get(target.id)
+            program = latest or target
+            if program.state != ProgramState.DONE:
+                raise ValueError(
+                    f"ContextOnlyParentRefresher: parent {program.short_id} "
+                    f"is {program.state.value}; expected DONE"
+                )
+            await self._refresh_context(program)
+            if program.state != ProgramState.DONE:
+                raise ValueError(
+                    f"ContextOnlyParentRefresher: context refresh changed "
+                    f"{program.short_id} state to {program.state.value}"
+                )
+            await self._storage.update(program)
+            refreshed.append(program)
+        return refreshed
+
+    async def _refresh_context(self, program: Program) -> None:
+        refreshed_at = time.time()
+        outputs: dict[str, Any] = {}
+        try:
+            outputs["DescendantProgramIds"] = await self._run_stage(
+                "DescendantProgramIds", program
+            )
+            outputs["AncestorProgramIds"] = await self._run_stage(
+                "AncestorProgramIds", program
+            )
+            outputs["LineagesToDescendants"] = await self._run_stage(
+                "LineagesToDescendants",
+                program,
+                {"descendant_ids": outputs.get("DescendantProgramIds")},
+            )
+            outputs["LineagesFromAncestors"] = await self._run_stage(
+                "LineagesFromAncestors",
+                program,
+                {"ancestor_ids": outputs.get("AncestorProgramIds")},
+            )
+            outputs["EvolutionaryStatisticsCollector"] = await self._run_stage(
+                "EvolutionaryStatisticsCollector", program
+            )
+            outputs["MemoryContextStage"] = await self._run_stage(
+                "MemoryContextStage", program
+            )
+            outputs["IntraMemoryStage"] = await self._run_stage(
+                "IntraMemoryStage",
+                program,
+                {"children_ids": outputs.get("DescendantProgramIds")},
+            )
+            outputs["MutationSuggestionStage"] = await self._run_stage(
+                "MutationSuggestionStage",
+                program,
+                {
+                    "intra_card": outputs.get("IntraMemoryStage"),
+                    "memory_cards": outputs.get("MemoryContextStage"),
+                    "evolutionary_statistics": outputs.get(
+                        "EvolutionaryStatisticsCollector"
+                    ),
+                },
+            )
+            outputs["ConcatMemoryStage"] = await self._run_stage(
+                "ConcatMemoryStage",
+                program,
+                {
+                    "intra": outputs.get("IntraMemoryStage"),
+                    "cards": outputs.get("MemoryContextStage"),
+                },
+            )
+
+            memory_output = (
+                outputs.get("ConcatMemoryStage")
+                or outputs.get("IntraMemoryStage")
+                or outputs.get("MemoryContextStage")
+            )
+            insights_output = outputs.get(
+                "MutationSuggestionStage"
+            ) or self._stored_output(program, "InsightsStage")
+
+            await self._run_stage(
+                "MutationContextStage",
+                program,
+                {
+                    "metrics": FloatDictContainer(data=program.metrics),
+                    "insights": insights_output,
+                    "lineage_descendants": outputs.get("LineagesToDescendants"),
+                    "lineage_ancestors": outputs.get("LineagesFromAncestors"),
+                    "evolutionary_statistics": outputs.get(
+                        "EvolutionaryStatisticsCollector"
+                    ),
+                    "formatted": self._stored_output(program, "FormatterStage"),
+                    "memory": memory_output,
+                },
+            )
+
+            program.metadata[CONTEXT_REFRESH_METADATA_KEY] = {
+                "mode": "context_only",
+                "status": "completed",
+                "refreshed_at": refreshed_at,
+                "has_mutation_context": (
+                    program.get_metadata(MUTATION_CONTEXT_METADATA_KEY) is not None
+                ),
+            }
+        except Exception as exc:
+            program.metadata[CONTEXT_REFRESH_METADATA_KEY] = {
+                "mode": "context_only",
+                "status": "failed",
+                "refreshed_at": refreshed_at,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+            }
+            raise
+
+    async def _run_stage(
+        self,
+        name: str,
+        program: Program,
+        inputs: dict[str, Any] | None = None,
+    ) -> Any | None:
+        factory = self._dag_blueprint.nodes.get(name)
+        if factory is None:
+            return None
+        clean_inputs = {
+            key: value for key, value in (inputs or {}).items() if value is not None
+        }
+        stage = factory()
+        stage.attach_inputs(clean_inputs)
+        result = await stage.execute(program)
+        program.stage_results[name] = result
+        if result.status == StageState.COMPLETED:
+            return result.output
+        return None
+
+    @staticmethod
+    def _stored_output(program: Program, stage_name: str) -> Any | None:
+        result: ProgramStageResult | None = program.stage_results.get(stage_name)
+        if result and result.status == StageState.COMPLETED:
+            return result.output
+        return None
+
+
 __all__ = [
     "CoalescedRefreshResult",
+    "ContextOnlyParentRefresher",
+    "CONTEXT_REFRESH_METADATA_KEY",
     "DirectParentsSelector",
     "ParentRefresher",
     "ParentRefreshSelector",

@@ -18,12 +18,24 @@ from gigaevo.evolution.scheduling.prioritizer import (
     CachedFirstPrioritizer,
     ProgramPrioritizer,
 )
+from gigaevo.programs.core_types import StageState
 from gigaevo.programs.dag.dag import DAG
 from gigaevo.programs.program import Program
 from gigaevo.programs.program_state import ProgramState
 from gigaevo.runner.dag_blueprint import DAGBlueprint
 from gigaevo.utils.metrics_collector import start_metrics_collector
 from gigaevo.utils.trackers.base import LogWriter
+
+ORPHAN_RETRY_COUNT_METADATA_KEY = "dag_runner_orphan_retries"
+ORPHAN_QUARANTINE_METADATA_KEY = "dag_runner_quarantine"
+_ORPHAN_TERMINAL_EVIDENCE_STAGES = frozenset(
+    {
+        "EnsureMetricsStage",
+        "FetchMetrics",
+        "ParseMetricsStage",
+        "MutationContextStage",
+    }
+)
 
 
 class TaskInfo(NamedTuple):
@@ -42,6 +54,10 @@ class DagRunnerMetrics(BaseModel):
     dag_errors: int = 0
     dag_timeouts: int = 0
     orphaned_programs_discarded: int = 0
+    orphaned_programs_preserved: int = 0
+    orphaned_programs_completed: int = 0
+    orphaned_programs_requeued: int = 0
+    orphaned_programs_quarantined: int = 0
     dag_build_failures: int = 0
     state_update_failures: int = 0
 
@@ -85,6 +101,20 @@ class DagRunnerMetrics(BaseModel):
         self.orphaned_programs_discarded += 1
         self.dag_errors += 1
 
+    def record_orphaned_preserved(self) -> None:
+        self.orphaned_programs_preserved += 1
+
+    def record_orphaned_completed(self) -> None:
+        self.orphaned_programs_completed += 1
+
+    def record_orphaned_requeued(self) -> None:
+        self.orphaned_programs_requeued += 1
+
+    def record_orphaned_quarantined(self) -> None:
+        self.orphaned_programs_quarantined += 1
+        self.orphaned_programs_discarded += 1
+        self.dag_errors += 1
+
     def record_build_failure(self) -> None:
         self.dag_build_failures += 1
         self.dag_errors += 1
@@ -123,6 +153,15 @@ class DagRunnerConfig(BaseModel):
     )
     dag_timeout: float = Field(
         default=3600, gt=0, description="Timeout for DAG execution"
+    )
+    orphan_retry_budget: int = Field(
+        default=3,
+        ge=0,
+        description=(
+            "Number of times a live runner may requeue an orphaned RUNNING "
+            "program before quarantining it as DISCARDED with metadata. "
+            "Programs with terminal evidence are never quarantined by this path."
+        ),
     )
 
     @field_validator("poll_interval")
@@ -352,21 +391,7 @@ class DagRunner:
             try:
                 orphaned = await self._storage.mget(orphaned_ids)
                 for p in [p for p in orphaned if p is not None]:
-                    try:
-                        await self._state_manager.set_program_state(
-                            p, ProgramState.DISCARDED
-                        )
-                        self._metrics.record_orphaned()
-                        logger.warning(
-                            "[DagScheduler] orphaned program {} discarded", p.short_id
-                        )
-                    except Exception as se:
-                        self._metrics.record_state_update_failure()
-                        logger.error(
-                            "[DagScheduler] orphan discard failed for {}: {}",
-                            p.short_id,
-                            se,
-                        )
+                    await self._reconcile_orphaned_running_program(p)
             except Exception as e:
                 logger.error("[DagScheduler] orphan fetch failed: {}", e)
 
@@ -501,7 +526,133 @@ class DagRunner:
                     "[DagScheduler] state update failed for {}: {}",
                     program.short_id,
                     se,
+            )
+
+    def _has_terminal_evidence(self, program: Program) -> bool:
+        """Return whether a RUNNING orphan has evidence of completed DAG work."""
+        if program.metrics:
+            return True
+        for stage_name in _ORPHAN_TERMINAL_EVIDENCE_STAGES:
+            result = program.stage_results.get(stage_name)
+            if result is not None and result.status == StageState.COMPLETED:
+                return True
+        return False
+
+    async def _reconcile_orphaned_running_program(self, program: Program) -> None:
+        """Resolve a RUNNING status-set entry that is not owned by this runner.
+
+        A missing `_active` entry is not proof of invalid work. The stored
+        program may already be DONE, or may have terminal stage evidence from a
+        DAG that completed before the scheduler crashed or lost local state.
+        Only retryable non-terminal RUNNING programs are requeued; repeated
+        non-terminal orphans are explicitly quarantined with metadata.
+        """
+        try:
+            if program.state == ProgramState.DONE:
+                await self._storage.transition_status(
+                    program.id,
+                    ProgramState.RUNNING.value,
+                    ProgramState.DONE.value,
                 )
+                self._metrics.record_orphaned_preserved()
+                logger.warning(
+                    "[DagScheduler] orphaned program {} already DONE — preserved",
+                    program.short_id,
+                )
+                return
+
+            if program.state == ProgramState.DISCARDED:
+                await self._storage.transition_status(
+                    program.id,
+                    ProgramState.RUNNING.value,
+                    ProgramState.DISCARDED.value,
+                )
+                self._metrics.record_orphaned_preserved()
+                logger.warning(
+                    "[DagScheduler] orphaned program {} already DISCARDED — "
+                    "cleaned status set",
+                    program.short_id,
+                )
+                return
+
+            if program.state == ProgramState.QUEUED:
+                await self._storage.transition_status(
+                    program.id,
+                    ProgramState.RUNNING.value,
+                    ProgramState.QUEUED.value,
+                )
+                self._metrics.record_orphaned_preserved()
+                logger.warning(
+                    "[DagScheduler] orphaned program {} blob is QUEUED — "
+                    "cleaned RUNNING status membership",
+                    program.short_id,
+                )
+                return
+
+            if self._has_terminal_evidence(program):
+                program.set_metadata(
+                    ORPHAN_QUARANTINE_METADATA_KEY,
+                    {
+                        "action": "finalized_done",
+                        "reason": "orphaned_running_with_terminal_evidence",
+                    },
+                )
+                await self._state_manager.set_program_state(program, ProgramState.DONE)
+                self._metrics.record_orphaned_completed()
+                logger.warning(
+                    "[DagScheduler] orphaned program {} had terminal evidence — "
+                    "finalized as DONE",
+                    program.short_id,
+                )
+                return
+
+            retries = int(program.metadata.get(ORPHAN_RETRY_COUNT_METADATA_KEY, 0) or 0)
+            if retries >= self._config.orphan_retry_budget:
+                program.set_metadata(
+                    ORPHAN_QUARANTINE_METADATA_KEY,
+                    {
+                        "action": "quarantined_discarded",
+                        "reason": "orphan_retry_budget_exhausted",
+                        "retry_count": retries,
+                    },
+                )
+                await self._state_manager.set_program_state(
+                    program, ProgramState.DISCARDED
+                )
+                self._metrics.record_orphaned_quarantined()
+                logger.error(
+                    "[DagScheduler] orphaned program {} exhausted retry budget "
+                    "({}) — quarantined as DISCARDED",
+                    program.short_id,
+                    retries,
+                )
+                return
+
+            program.set_metadata(ORPHAN_RETRY_COUNT_METADATA_KEY, retries + 1)
+            requeued = await self._storage.requeue_running_program(program)
+            if requeued:
+                self._metrics.record_orphaned_requeued()
+                logger.warning(
+                    "[DagScheduler] orphaned program {} requeued for retry "
+                    "({}/{})",
+                    program.short_id,
+                    retries + 1,
+                    self._config.orphan_retry_budget,
+                )
+            else:
+                self._metrics.record_orphaned_preserved()
+                logger.warning(
+                    "[DagScheduler] orphaned program {} was no longer RUNNING "
+                    "during reconciliation",
+                    program.short_id,
+                )
+        except Exception as se:
+            self._metrics.record_state_update_failure()
+            logger.error(
+                "[DagScheduler] orphan reconciliation failed for {}: {}",
+                program.short_id,
+                se,
+            )
 
     async def _flush_done_queue(self) -> None:
         """Batch-transition queued DONE programs to Redis."""

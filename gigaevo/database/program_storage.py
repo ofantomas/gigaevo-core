@@ -376,5 +376,25 @@ class ProgramStorage(ABC):
         """
         return 0
 
+    async def requeue_running_program(self, program: Program) -> bool:
+        """Reset one stranded RUNNING program to QUEUED.
+
+        This is the targeted live-runner counterpart to
+        :meth:`recover_stranded_programs`. It deliberately bypasses normal
+        transition validation because ``RUNNING -> QUEUED`` is not a lifecycle
+        transition; it is crash/orphan recovery. The caller owns deciding that
+        the program is not held by a live in-process task.
+        """
+        if program.state != ProgramState.RUNNING:
+            return False
+        program.state = ProgramState.QUEUED
+        await self.write_exclusive(program)
+        await self.batch_move_status_sets(
+            [program.id],
+            ProgramState.RUNNING.value,
+            ProgramState.QUEUED.value,
+        )
+        return True
+
     @abstractmethod
     async def close(self) -> None: ...

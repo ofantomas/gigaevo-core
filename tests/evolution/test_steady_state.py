@@ -15,11 +15,12 @@ import pytest
 
 from gigaevo.evolution.engine.config import EngineConfig, SteadyStateEngineConfig
 from gigaevo.evolution.engine.core import EvolutionEngine
-from gigaevo.evolution.engine.refresh import ParentRefresher
+from gigaevo.evolution.engine.refresh import ContextOnlyParentRefresher, ParentRefresher
 from gigaevo.evolution.engine.steady_state import SteadyStateEvolutionEngine
 from gigaevo.evolution.engine.stopper import EvolutionStopper, MaxMutantsStopper
 from gigaevo.programs.program import Program
 from gigaevo.programs.program_state import ProgramState
+from gigaevo.runner.dag_blueprint import DAGBlueprint
 
 SS_TEST_TIMEOUT = 5.0
 
@@ -29,6 +30,8 @@ def _make_ss_engine(
     max_in_flight: int = 4,
     max_mutants: int | None = None,
     loop_interval: float = 0.01,
+    refresh_mode: str = "stateful",
+    dag_blueprint: DAGBlueprint | None = None,
 ) -> SteadyStateEvolutionEngine:
     """Build a minimal SteadyStateEvolutionEngine with mocked dependencies."""
     storage = AsyncMock()
@@ -53,6 +56,7 @@ def _make_ss_engine(
         max_in_flight=max_in_flight,
         stopper=stopper,
         loop_interval=loop_interval,
+        refresh_mode=refresh_mode,
     )
 
     engine = SteadyStateEvolutionEngine(
@@ -62,6 +66,7 @@ def _make_ss_engine(
         config=config,
         writer=writer,
         metrics_tracker=metrics_tracker,
+        dag_blueprint=dag_blueprint,
     )
     engine.state = AsyncMock()
     return engine
@@ -102,6 +107,18 @@ class TestConstruction:
         """Every SteadyStateEvolutionEngine wires a ParentRefresher at __init__ time."""
         engine = _make_ss_engine()
         assert isinstance(engine._parent_refresher, ParentRefresher)
+        assert not isinstance(engine._parent_refresher, ContextOnlyParentRefresher)
+
+    def test_context_only_refresh_wires_context_refresher(self) -> None:
+        engine = _make_ss_engine(
+            refresh_mode="context_only",
+            dag_blueprint=DAGBlueprint(nodes={}, data_flow_edges=[]),
+        )
+        assert isinstance(engine._parent_refresher, ContextOnlyParentRefresher)
+
+    def test_context_only_refresh_requires_blueprint(self) -> None:
+        with pytest.raises(ValueError, match="requires dag_blueprint"):
+            _make_ss_engine(refresh_mode="context_only")
 
 
 # ---------------------------------------------------------------------------
