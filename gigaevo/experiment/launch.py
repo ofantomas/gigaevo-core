@@ -292,13 +292,21 @@ def _release_claims(experiment: str, dbs: list[int]) -> None:
 
 
 def _git_head() -> str:
+    # Resolve against the repo root, not the caller's CWD: a launch invoked
+    # from outside the checkout would otherwise get an empty HEAD (git exits
+    # non-zero), leaving lifecycle.launch.commit="" and failing the
+    # status=running gate. check=True turns a git failure into the "unknown"
+    # fallback instead of an empty string.
     try:
+        repo_root = Path(__file__).resolve().parents[2]
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
+            cwd=repo_root,
+            check=True,
         )
-        return result.stdout.strip()
+        return result.stdout.strip() or "unknown"
     except Exception:
         return "unknown"

@@ -110,7 +110,11 @@ async def run_experiment(cfg: DictConfig) -> None:
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
-    load_dotenv()
+    # override=True: .env is the credential source of truth. A launcher's
+    # preflight may leave a placeholder (e.g. OPENAI_API_KEY=<dry-run-stub>) in
+    # the inherited environment; without override the real key never loads and
+    # every LLM call fails auth. .env keys win; vars absent from .env are kept.
+    load_dotenv(override=True)
     log_file_path = setup_logger(
         log_dir=cfg.logging.log_dir,
         level=cfg.logging.level,
