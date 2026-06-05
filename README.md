@@ -177,7 +177,10 @@ contract:
   runs:
     - label: A1
       db: 1                               # program storage — MUST differ from the xTB queue (db0)
-      prefix: fsbe
+      prefix: full_sella_baseline_evolution   # MUST equal ${problem.name}: the redis key_prefix
+                                              # defaults to the problem name and the launcher does
+                                              # NOT propagate run.prefix to it, so status/top/trajectory
+                                              # read this prefix and find nothing if it differs.
       pipeline: intra_extra_memory
       problem_name: full_sella_baseline_evolution
       condition: diff_baseline
