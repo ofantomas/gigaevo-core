@@ -8,15 +8,21 @@ import click
 import redis as redis_lib
 
 from gigaevo.cli.output_formatter import OutputFormatter
-from gigaevo.cli.run_resolver import RunResolver
+from gigaevo.cli.run_resolver import RunResolver, _load_metric_directions
 
 
 def _fetch_trajectory(
     r: redis_lib.Redis,
     prefix: str,
     metric: str,
+    minimize: bool = False,
 ) -> list[dict]:
-    """Fetch per-gen trajectory data from Redis. Returns list of row dicts."""
+    """Fetch per-gen trajectory data from Redis. Returns list of row dicts.
+
+    ``minimize`` flips the running-best direction for lower-is-better metrics
+    (e.g. fitness = mean_rel_steps); otherwise the running best is tracked as
+    the maximum, which would report the WORST value as "best".
+    """
     frontier_key = f"{prefix}:metrics:history:program_metrics:valid_frontier_{metric}"
     mean_key = f"{prefix}:metrics:history:program_metrics:valid_gen_{metric}_mean"
 
@@ -45,7 +51,9 @@ def _fetch_trajectory(
     for gen in all_gens:
         best = frontier_by_gen.get(gen)
         if best is not None:
-            if running_best is None or best > running_best:
+            if running_best is None:
+                running_best = best
+            elif (best < running_best) if minimize else (best > running_best):
                 running_best = best
         mean = mean_by_gen.get(gen)
         rows.append(
@@ -137,9 +145,12 @@ def trajectory(
             r = redis_lib.Redis(
                 host=redis_host, port=redis_port, db=spec.db, decode_responses=True
             )
+        directions = _load_metric_directions(rc.problem_name or "")
         try:
             for m in metrics_to_show:
-                rows = _fetch_trajectory(r, spec.prefix, m)
+                rows = _fetch_trajectory(
+                    r, spec.prefix, m, minimize=directions.get(m) is False
+                )
                 rows_per_metric[m] += len(rows)
                 for row in rows:
                     if len(run_configs) > 1:

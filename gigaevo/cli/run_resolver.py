@@ -47,6 +47,28 @@ def _load_metric_names(problem_name: str) -> list[str]:
     return result if result else ["fitness"]
 
 
+def _load_metric_directions(problem_name: str) -> dict[str, bool]:
+    """Map metric name -> ``higher_is_better`` from problems/<name>/metrics.yaml.
+
+    Used by ``top``/``trajectory`` to rank/track in the correct direction.
+    Missing file/keys -> {} (callers then default to higher-is-better).
+    """
+    path = Path("problems") / problem_name / "metrics.yaml"
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return {}
+    specs = data.get("specs", {}) if isinstance(data, dict) else {}
+    return {
+        name: bool(spec.get("higher_is_better", True))
+        for name, spec in specs.items()
+        if isinstance(spec, dict)
+    }
+
+
 class RunResolver:
     """Resolve CLI flags into list[RunConfig] for the monitoring library."""
 
@@ -126,6 +148,7 @@ class RunResolver:
                     run_spec=spec,
                     metric_names=metric_names,
                     pid=run.pid,
+                    problem_name=run.problem_name,
                 )
             )
         return configs

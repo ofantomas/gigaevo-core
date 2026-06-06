@@ -23,6 +23,7 @@ class RunConfig:
     run_spec: RunSpec
     metric_names: list[str] = field(default_factory=lambda: ["fitness"])
     pid: int | None = None
+    problem_name: str | None = None
 
 
 class ExperimentMonitor:

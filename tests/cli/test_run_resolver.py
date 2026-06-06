@@ -11,6 +11,40 @@ from gigaevo.cli.run_resolver import RunResolver
 from gigaevo.monitoring.run_spec import RunSpec
 
 
+class TestLoadMetricDirections:
+    def test_reads_higher_is_better(self, tmp_path, monkeypatch):
+        import yaml
+
+        from gigaevo.cli.run_resolver import _load_metric_directions
+
+        monkeypatch.chdir(tmp_path)
+        prob = tmp_path / "problems" / "myprob"
+        prob.mkdir(parents=True)
+        (prob / "metrics.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "specs": {
+                        "fitness": {"higher_is_better": False},
+                        "converged": {"higher_is_better": True},
+                        "is_valid": {},  # defaults to True
+                    }
+                }
+            )
+        )
+        directions = _load_metric_directions("myprob")
+        assert directions == {
+            "fitness": False,
+            "converged": True,
+            "is_valid": True,
+        }
+
+    def test_missing_file_returns_empty(self, tmp_path, monkeypatch):
+        from gigaevo.cli.run_resolver import _load_metric_directions
+
+        monkeypatch.chdir(tmp_path)
+        assert _load_metric_directions("nope") == {}
+
+
 class TestResolveFromRunFlags:
     def test_single_run(self):
         configs = RunResolver.resolve(

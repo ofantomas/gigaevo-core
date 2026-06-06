@@ -47,6 +47,30 @@ def _make_obj(server: fakeredis.FakeServer) -> dict:
     }
 
 
+class TestFetchTrajectoryDirection:
+    """Running-best must follow the metric direction (lower-is-better support)."""
+
+    def _frontier(self, minimize: bool):
+        from gigaevo.cli.trajectory import _fetch_trajectory
+
+        server = fakeredis.FakeServer()
+        # Fitness improves = decreases over generations.
+        _populate_trajectory(
+            server, 4, "p", [(1, 0.60, 0.7), (2, 0.50, 0.6), (3, 0.42, 0.5)]
+        )
+        r = fakeredis.FakeRedis(server=server, db=4, decode_responses=True)
+        rows = _fetch_trajectory(r, "p", "fitness", minimize=minimize)
+        return [row["Best"] for row in rows]
+
+    def test_minimize_tracks_descending_best(self):
+        """minimize=True: running best follows the improving (lower) frontier."""
+        assert self._frontier(minimize=True) == [0.60, 0.50, 0.42]
+
+    def test_maximize_default_keeps_first(self):
+        """minimize=False (legacy): a decreasing frontier never 'improves'."""
+        assert self._frontier(minimize=False) == [0.60, 0.60, 0.60]
+
+
 class TestTrajectoryBasic:
     def test_json_output_has_per_gen_rows(self):
         """Trajectory returns one row per generation in JSON."""

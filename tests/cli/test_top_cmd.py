@@ -227,6 +227,84 @@ class TestTopManifestDefaultMetric:
                 "Actual_Fitness" in data[0] or "actual_fitness" in str(data[0]).lower()
             )
 
+    def _run_experiment_top(
+        self, server, monkeypatch, tmp_path, *, higher_is_better, extra_args=()
+    ):
+        """Helper: write metrics.yaml on disk + invoke `top -e` in --experiment mode."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        import yaml
+
+        from gigaevo.monitoring.experiment_monitor import RunConfig
+        from gigaevo.monitoring.run_spec import RunSpec
+
+        monkeypatch.chdir(tmp_path)
+        prob_dir = tmp_path / "problems" / "testprob"
+        prob_dir.mkdir(parents=True)
+        (prob_dir / "metrics.yaml").write_text(
+            yaml.safe_dump(
+                {"specs": {"fitness": {"higher_is_better": higher_is_better}}}
+            )
+        )
+
+        mock_manifest = MagicMock()
+        mock_manifest.contract.problem.metric_name = "fitness"
+        mock_manifest.contract.runs = [SimpleNamespace(problem_name="testprob")]
+
+        configs = [
+            RunConfig(
+                run_spec=RunSpec(prefix="p", db=4, label="A"),
+                metric_names=["fitness"],
+                problem_name="testprob",
+            ),
+        ]
+
+        obj = _make_obj(server)
+        obj["experiment"] = "test/exp"
+        obj["runs"] = ()
+
+        with (
+            patch(
+                "gigaevo.experiment.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch.object(RunResolver, "resolve", return_value=configs),
+        ):
+            runner = CliRunner()
+            result = runner.invoke(
+                main,
+                ["-e", "test/exp", "-f", "json", "top", "-n", "1", *extra_args],
+                obj=obj,
+                catch_exceptions=False,
+            )
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)
+
+    def test_lower_is_better_ranks_ascending_without_minimize(
+        self, monkeypatch, tmp_path
+    ):
+        """higher_is_better:false auto-ranks ascending (best=lowest) sans --minimize."""
+        server = fakeredis.FakeServer()
+        _store_program(server, 4, "p", "aaa111111111", 1, 0.10)
+        _store_program(server, 4, "p", "bbb222222222", 2, 0.90)
+
+        data = self._run_experiment_top(
+            server, monkeypatch, tmp_path, higher_is_better=False
+        )
+        assert data[0]["Fitness"] == 0.10  # best (fewest steps) first
+
+    def test_higher_is_better_keeps_descending(self, monkeypatch, tmp_path):
+        """higher_is_better:true preserves descending default (best=highest)."""
+        server = fakeredis.FakeServer()
+        _store_program(server, 4, "p", "aaa111111111", 1, 0.10)
+        _store_program(server, 4, "p", "bbb222222222", 2, 0.90)
+
+        data = self._run_experiment_top(
+            server, monkeypatch, tmp_path, higher_is_better=True
+        )
+        assert data[0]["Fitness"] == 0.90
+
     def test_explicit_metric_overrides_manifest(self):
         """Explicit --metric quality overrides manifest default."""
         from unittest.mock import MagicMock, patch

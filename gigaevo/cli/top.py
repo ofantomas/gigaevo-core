@@ -85,7 +85,10 @@ def top(
 
     Auto-detection: in `-e/--experiment` mode, `--metric` defaults to the
     manifest's `problem.metric_name` (e.g. `actual_fitness`). Otherwise
-    defaults to `fitness`. Pass `--minimize` to rank ascending.
+    defaults to `fitness`. The sort direction is read from the problem's
+    `metrics.yaml` `higher_is_better`: a lower-is-better metric (e.g.
+    fitness = mean_rel_steps) ranks ascending automatically. Pass
+    `--minimize` to force ascending when no manifest direction is available.
     """
     if top_n < 1:
         raise click.BadParameter(
@@ -100,17 +103,29 @@ def top(
     redis_host = ctx.obj["redis_host"]
     redis_port = ctx.obj["redis_port"]
 
-    # Use manifest's problem.metric_name as default when in --experiment mode
-    # and user didn't explicitly pass --metric (still has Click default "fitness")
-    if metric == "fitness" and experiment:
+    # In --experiment mode: default --metric to the manifest's metric_name, and
+    # auto-detect the rank direction from metrics.yaml `higher_is_better` unless
+    # the user explicitly passed --minimize. A lower-is-better metric (e.g.
+    # fitness = mean_rel_steps) must rank ascending; without this `top` showed
+    # the WORST programs first.
+    if experiment:
         try:
+            from gigaevo.cli.run_resolver import _load_metric_directions
             from gigaevo.experiment.manifest import load_manifest
 
             manifest = load_manifest(experiment)
-            if manifest.contract.problem.metric_name:
+            if metric == "fitness" and manifest.contract.problem.metric_name:
                 metric = manifest.contract.problem.metric_name
+            if not minimize:  # --minimize is a flag: False == not passed
+                problem_name = (
+                    manifest.contract.runs[0].problem_name
+                    if manifest.contract.runs
+                    else manifest.contract.problem.name
+                )
+                if _load_metric_directions(problem_name).get(metric) is False:
+                    minimize = True
         except Exception:
-            pass  # fall back to "fitness"
+            pass  # fall back to defaults
 
     run_configs = RunResolver.resolve(
         experiment=experiment,
