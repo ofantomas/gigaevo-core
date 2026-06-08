@@ -17,6 +17,7 @@ so tests can stub it without spinning up Hydra.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 from dataclasses import dataclass, field
 import hashlib
 import os
@@ -83,11 +84,34 @@ def _ref_stub_resolver(path: str) -> str:
 OmegaConf.register_new_resolver("ref", _ref_stub_resolver, replace=True)
 
 
-# Set placeholder env vars for ${oc.env:...} references that appear in the
-# default LLM/logging configs. The preview only needs pin-match values;
-# secrets don't matter.
-for _env_key in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"):
-    os.environ.setdefault(_env_key, "<dry-run-stub>")
+# Secret env vars referenced as ${oc.env:...} in the default LLM/logging configs.
+# The dry-run preview resolves these but only needs *a* value, not a real secret.
+_SECRET_ENV_STUBS = ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY")
+
+
+@contextlib.contextmanager
+def _stubbed_secret_env():
+    """Temporarily stub *unset* secret env vars during config resolution.
+
+    Restores ``os.environ`` on exit so a placeholder can NEVER persist into a
+    run launched afterwards. Historically these stubs were applied at module
+    import and never removed; because preflight imports this module, the
+    launcher's environment kept ``OPENAI_API_KEY="<dry-run-stub>"`` and the
+    nohup'd ``run.py`` inherited it -- producing an auth-failure storm of tens
+    of thousands of 401s against OpenRouter (with the older
+    ``load_dotenv(override=False)``, the real ``.env`` key never reclaimed it).
+    """
+    added = []
+    for key in _SECRET_ENV_STUBS:
+        if key not in os.environ:
+            os.environ[key] = "<dry-run-stub>"
+            added.append(key)
+    try:
+        yield
+    finally:
+        for key in added:
+            os.environ.pop(key, None)
+
 
 PYTHON_PATH_DEFAULT = "/home/jovyan/.mlspace/envs/evo/bin/python3"
 
@@ -153,20 +177,24 @@ def dry_run(
             )
         return run_label, doc  # type: ignore[return-value]
 
-    if max_workers <= 1 or len(cli_args) == 1:
-        for label, args in cli_args.items():
-            label, doc = _one(label, args)
-            resolved[label] = doc
-    else:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(max_workers, len(cli_args))
-        ) as pool:
-            futures = [
-                pool.submit(_one, label, args) for label, args in cli_args.items()
-            ]
-            for fut in concurrent.futures.as_completed(futures):
-                label, doc = fut.result()  # re-raises worker exceptions
+    # Stub secret env vars only for the duration of resolution (subprocess +
+    # parent to_container) and restore immediately after, so a placeholder can
+    # never leak into the real run the caller launches later.
+    with _stubbed_secret_env():
+        if max_workers <= 1 or len(cli_args) == 1:
+            for label, args in cli_args.items():
+                label, doc = _one(label, args)
                 resolved[label] = doc
+        else:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(max_workers, len(cli_args))
+            ) as pool:
+                futures = [
+                    pool.submit(_one, label, args) for label, args in cli_args.items()
+                ]
+                for fut in concurrent.futures.as_completed(futures):
+                    label, doc = fut.result()  # re-raises worker exceptions
+                    resolved[label] = doc
 
     # Step 3: Fingerprint Hydra-reachable config files.
     fingerprint = _fingerprint_config(manifest)

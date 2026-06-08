@@ -234,3 +234,52 @@ class TestInvokeFailureSurface:
         exp, _ = dummy_manifest
         with pytest.raises(RuntimeError, match="Hydra compose failed"):
             dry_run(exp)
+
+
+class TestSecretEnvNoLeak:
+    """Regression: the dry-run secret-env stub must NOT persist into os.environ.
+
+    Historically the placeholder was applied at module import and never removed,
+    so a launcher (which imports this module during preflight) kept
+    OPENAI_API_KEY="<dry-run-stub>" and the launched run inherited it -> a storm
+    of 401s against OpenRouter.
+    """
+
+    def test_unset_secret_not_leaked(self, dummy_manifest, stub_invoke, monkeypatch):
+        import os
+
+        from gigaevo.experiment.dry_run import dry_run
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        exp, _ = dummy_manifest
+        dry_run(exp)
+        assert "OPENAI_API_KEY" not in os.environ, "stub leaked into os.environ"
+
+    def test_existing_secret_preserved(self, dummy_manifest, stub_invoke, monkeypatch):
+        import os
+
+        from gigaevo.experiment.dry_run import dry_run
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-123")
+        exp, _ = dummy_manifest
+        dry_run(exp)
+        assert os.environ["OPENAI_API_KEY"] == "sk-real-123", "real key was clobbered"
+
+    def test_stub_available_during_resolution(self, dummy_manifest, monkeypatch):
+        import os
+
+        import gigaevo.experiment.dry_run as mod
+        from gigaevo.experiment.dry_run import dry_run
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        seen: dict[str, str | None] = {}
+
+        def _fake(args, cwd, timeout=120):
+            seen["during"] = os.environ.get("OPENAI_API_KEY")
+            return "problem:\n  name: toy_kadane\nn_opponents: 3\nnum_parents: 1\n"
+
+        monkeypatch.setattr(mod, "_invoke_run_py_cfg_job", _fake)
+        exp, _ = dummy_manifest
+        dry_run(exp)
+        assert seen["during"] == "<dry-run-stub>", "stub missing during resolution"
+        assert "OPENAI_API_KEY" not in os.environ, "stub leaked after resolution"
