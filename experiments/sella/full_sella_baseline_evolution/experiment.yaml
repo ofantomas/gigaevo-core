@@ -6,15 +6,15 @@ contract:
     branch: full-sella-baseline-evolution
   problem:
     name: full_sella_baseline_evolution
-    has_test_set: true
+    has_test_set: false        # held-out test_XTB.json is NOT evaluated during the run
+                               # (fitness is computed on train); kept out of the manifest
+                               # to avoid the impression that evolution sees the test set.
     fitness_type: continuous
     metric_name: fitness
-    test_set_path: /home/tsypin/opt_problem_fsbe/molecules/test_XTB.json
-    test_set_sha256: 02c72caf2e3f267cd0b18f37c953b41012653803b173e8cca0c05e48eff51c16
   config:
     problem_name: full_sella_baseline_evolution
     pipeline: intra_extra_memory
-    llm_model: google/gemini-3.5-flash
+    llm_model: qwen/qwen3.7-max
     max_generations: null
     shared_overrides:
       mutation_mode: diff
@@ -30,7 +30,7 @@ contract:
       pipeline: intra_extra_memory
       problem_name: full_sella_baseline_evolution
       condition: diff_baseline
-      model_name: google/gemini-3.5-flash
+      model_name: qwen/qwen3.7-max
       mutation_url: https://openrouter.ai/api/v1
   servers:
     - https://openrouter.ai/api/v1

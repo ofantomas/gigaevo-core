@@ -17,5 +17,14 @@ llm:
       # generation while still capping worst-case stall.
       request_timeout: 600
       max_retries: 2
+      # OpenRouter reasoning control (forwarded verbatim into the request body;
+      # OpenRouter reads the top-level `reasoning` field). qwen3.7-max is a
+      # hybrid model with no native effort tiers, so thinking is enabled with an
+      # explicit token budget. 20000 sits well under max_tokens (81920) and
+      # leaves ample room for the program output.
+      extra_body:
+        reasoning:
+          enabled: true
+          max_tokens: 20000
   probabilities: [1.0]
   writer: ${writer}
